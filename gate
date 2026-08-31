@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# gate — bind a beads issue to an unlazy gate ledger and verify before close.
+#
+# A bead's runnable acceptance lives in a ledger at .beads/gates/<bead-id>.md
+# (override with GATE_DIR). This wrapper runs the unlazy checker against that
+# ledger and only closes the bead when every gate passes with evidence.
+#
+# Usage:
+#   gate <bead-id>            reverify the ledger (default; re-executes checks)
+#   gate <bead-id> --status   parse/report only, no execution
+#   gate <bead-id> --approve  approve+run pending checks (first run of new checks)
+#   gate <bead-id> --lint     lint the ledger for un-failable oracles
+#   gate <bead-id> --new      scaffold a ledger from the template
+#   gate <bead-id> --close    reverify, then `bd close <bead-id>` iff all gates pass
+#
+# Conventions (see ~/.agents/unlazy-beads-rtk/beads_unlazy_plan.md):
+#   - Route CHECK commands through rtk (rtk cargo test, rtk npm ...). rtk's
+#     rewrite hook does NOT fire under Copilot/Cursor, so write `rtk` explicitly.
+#   - Approvals bind the exact command string; keep the rtk-vs-raw choice stable.
+#   - Approvals live under ~/.unlazy/approved (outside every repo, enforced).
+set -euo pipefail
+case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"; exit 0;; esac
+
+SKILL_DIR="${UNLAZY_SKILL_DIR:-$HOME/.agents/skills/unlazy}"
+CHECKER="$SKILL_DIR/scripts/gate_check.py"
+LINTER="$SKILL_DIR/scripts/gate_lint.py"
+TEMPLATE="${GATES_TEMPLATE:-$HOME/.agents/unlazy-beads-rtk/GATES.template.md}"
+
+die() { echo "gate: $*" >&2; exit 2; }
+
+[[ $# -ge 1 ]] || die "usage: gate <bead-id> [--status|--approve|--lint|--new|--close]"
+[[ -f "$CHECKER" ]] || die "checker not found: $CHECKER (set UNLAZY_SKILL_DIR)"
+
+bead="$1"; shift || true
+action="${1:-reverify}"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+gate_dir="${GATE_DIR:-$repo_root/.beads/gates}"
+ledger="$gate_dir/$bead.md"
+
+case "$action" in
+  --new)
+    [[ -f "$TEMPLATE" ]] || die "template not found: $TEMPLATE"
+    [[ -e "$ledger" ]] && die "ledger already exists: $ledger"
+    mkdir -p "$gate_dir"
+    sed "s/<BEAD-ID>/$bead/g" "$TEMPLATE" > "$ledger"
+    echo "created $ledger — edit gates, then: gate $bead --lint && gate $bead --approve"
+    ;;
+  --lint)
+    [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
+    python3 "$LINTER" "$ledger"
+    ;;
+  --status)
+    [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
+    python3 "$CHECKER" --status --root "$repo_root" "$ledger"
+    ;;
+  --approve)
+    [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
+    python3 "$CHECKER" --approve --root "$repo_root" "$ledger"
+    ;;
+  --close)
+    [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
+    if python3 "$CHECKER" --reverify --root "$repo_root" "$ledger"; then
+      bd close "$bead"
+    else
+      echo "HANDOFF REQUIRED: gates unmet for $bead — bead left open" >&2
+      exit 1
+    fi
+    ;;
+  reverify|"")
+    [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
+    python3 "$CHECKER" --reverify --root "$repo_root" "$ledger"
+    ;;
+  *)
+    die "unknown action: $action"
+    ;;
+esac

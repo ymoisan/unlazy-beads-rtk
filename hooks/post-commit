@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# post-commit — append the just-made commit's closed beads (with sha) to
+# .beads/DEVLOG.md and advance the watermark. Runs only on a successful commit.
+DEVLOG="$HOME/.agents/unlazy-beads-rtk/devlog_update"
+[[ -x "$DEVLOG" ]] || exit 0
+"$DEVLOG" --commit "$(git rev-parse HEAD 2>/dev/null)" >/dev/null 2>&1 || true
+exit 0

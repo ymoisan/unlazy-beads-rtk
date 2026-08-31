@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "unlazy-beads-rtk Runtime Architecture",
+    "subtitle": "completion gates for AI coding · installed toolkit · user-provided beads + Dolt",
+    "output": "docs/architecture/unlazy-architecture.html",
+    "animation": "trace",
+    "visual_preset": "blueprint",
+    "viewBox": [1560, 840],
+    "views": [
+      {
+        "id": "arm-once",
+        "label": "Arm once",
+        "focus": ["agent", "install", "stop_gate", "state"],
+        "note": "install-stop-hook wires the VS Code adapter and writes the armed marker into ~/.unlazy so a disabled hook can't masquerade as a passing one."
+      },
+      {
+        "id": "enforce",
+        "label": "Enforce a gate",
+        "focus": ["agent", "stop_gate", "gate", "gates_ledger", "bd"],
+        "note": "At turn end stop-gate runs each in-progress bead's CHECK; an unsatisfied ledger fails closed instead of allowing a silent stop."
+      },
+      {
+        "id": "session-start",
+        "label": "Session-start doctor",
+        "focus": ["agent", "hook_doctor", "state", "stale", "bd"],
+        "note": "hook-doctor reads the markers without needing the hook to run, so it detects an INACTIVE hook and reports stale in-progress beads."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "AI Agent",
+      "sublabel": "VS Code Copilot / CLI",
+      "pos": [40, 320],
+      "size": [160, 64]
+    },
+    {
+      "id": "install",
+      "type": "frontend",
+      "label": "install-stop-hook",
+      "sublabel": "VS Code adapter · bootstrap",
+      "pos": [280, 60],
+      "size": [230, 60]
+    },
+    {
+      "id": "state",
+      "type": "database",
+      "label": "unlazy state",
+      "sublabel": "~/.unlazy heartbeat · status",
+      "pos": [620, 60],
+      "size": [230, 60]
+    },
+    {
+      "id": "hook_doctor",
+      "type": "backend",
+      "label": "hook-doctor",
+      "sublabel": "session-start verdict",
+      "pos": [280, 320],
+      "size": [220, 64]
+    },
+    {
+      "id": "gate",
+      "type": "backend",
+      "label": "gate",
+      "sublabel": "ledger · CHECK · close/refuse",
+      "pos": [620, 320],
+      "size": [240, 64]
+    },
+    {
+      "id": "stop_gate",
+      "type": "security",
+      "label": "stop-gate",
+      "sublabel": "turn-end enforcement",
+      "pos": [280, 580],
+      "size": [220, 64],
+      "tag": "fail-closed"
+    },
+    {
+      "id": "stale",
+      "type": "backend",
+      "label": "stale-beads",
+      "sublabel": "> UNLAZY_STALE_HOURS",
+      "pos": [620, 580],
+      "size": [220, 64]
+    },
+    {
+      "id": "bd",
+      "type": "external",
+      "label": "beads (bd)",
+      "sublabel": "issue tracking",
+      "pos": [960, 320],
+      "size": [190, 64],
+      "tag": "prerequisite"
+    },
+    {
+      "id": "dolt",
+      "type": "database",
+      "label": "Dolt",
+      "sublabel": "embedded / sql-server",
+      "pos": [1240, 320],
+      "size": [180, 64],
+      "tag": "user-configured"
+    },
+    {
+      "id": "gates_ledger",
+      "type": "cloud",
+      "label": "gate ledgers",
+      "sublabel": ".beads/gates · GATES.md",
+      "pos": [960, 580],
+      "size": [210, 64]
+    },
+    {
+      "id": "project",
+      "type": "external",
+      "label": "your project repo",
+      "sublabel": ".beads/ · source",
+      "pos": [1240, 580],
+      "size": [200, 64]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "unlazy toolkit (this repo, installed)",
+      "wraps": ["install", "state", "hook_doctor", "gate", "stop_gate", "stale"]
+    },
+    {
+      "kind": "security-group",
+      "label": "fail-closed gate",
+      "wraps": ["gate", "stop_gate"]
+    },
+    {
+      "kind": "region",
+      "label": "user prerequisites (beads + Dolt)",
+      "wraps": ["bd", "dolt"]
+    },
+    {
+      "kind": "region",
+      "label": "your project workspace",
+      "wraps": ["gates_ledger", "project"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "agent-install",
+      "from": "agent",
+      "to": "install",
+      "label": "arm once",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "agent-doctor",
+      "from": "agent",
+      "to": "hook_doctor",
+      "label": "session start",
+      "variant": "emphasis",
+      "labelAt": [240, 300]
+    },
+    {
+      "id": "agent-gate",
+      "from": "agent",
+      "to": "gate",
+      "label": "create · close",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "route": "orthogonal-v",
+      "via": [[120, 490], [740, 490]],
+      "labelAt": [430, 476]
+    },
+    {
+      "id": "agent-stop",
+      "from": "agent",
+      "to": "stop_gate",
+      "label": "turn end",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "install-state",
+      "from": "install",
+      "to": "state",
+      "label": "writes armed",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "install-stop",
+      "from": "install",
+      "to": "stop_gate",
+      "label": "registers",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "left",
+      "labelAt": [256, 398]
+    },
+    {
+      "id": "doctor-state",
+      "from": "hook_doctor",
+      "to": "state",
+      "label": "verdict",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "stop-state",
+      "from": "stop_gate",
+      "to": "state",
+      "label": "heartbeat",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "labelAt": [524, 398]
+    },
+    {
+      "id": "stop-gate-check",
+      "from": "stop_gate",
+      "to": "gate",
+      "label": "run CHECK",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [560, 470]
+    },
+    {
+      "id": "gate-bd",
+      "from": "gate",
+      "to": "bd",
+      "label": "read · close",
+      "variant": "emphasis",
+      "labelAt": [905, 300]
+    },
+    {
+      "id": "gate-ledger",
+      "from": "gate",
+      "to": "gates_ledger",
+      "label": "ledger",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "stale-bd",
+      "from": "stale",
+      "to": "bd",
+      "label": "in_progress age",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "bd-dolt",
+      "from": "bd",
+      "to": "dolt",
+      "label": "SQL",
+      "variant": "emphasis",
+      "labelAt": [1195, 300]
+    },
+    {
+      "id": "bd-project",
+      "from": "bd",
+      "to": "project",
+      "label": "operates on .beads",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "What this repo installs",
+      "items": [
+        "gate / stop-gate / hook-doctor / stale-beads — tool-agnostic shell",
+        "install-stop-hook — the VS Code / Copilot adapter",
+        "Runtime markers live in ~/.unlazy (heartbeat · status · session-start)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Fail-closed enforcement",
+      "items": [
+        "A bead cannot close until its acceptance CHECK passes",
+        "stop-gate re-runs the CHECK at turn end, not just when asked",
+        "hook-doctor reads markers without the hook, so a dead hook surfaces"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "User-provided prerequisites",
+      "items": [
+        "beads (bd) is installed and configured by the user",
+        "beads owns Dolt — embedded or sql-server, the user's choice",
+        "This repo never installs or manages Dolt"
+      ]
+    }
+  ]
+}

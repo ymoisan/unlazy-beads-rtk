@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# stale-beads — list in-progress beads older than UNLAZY_STALE_HOURS (default 2)
+# for the repo at [path] (default: cwd). Prints "  <id>  (<h>h)  <title>".
+# Source of truth is the repo's own Dolt DB (the same data bd uses), so you can
+# ping for rotting async work at any time — not just at session boundaries.
+#
+# Usage:
+#   stale-beads [path]            list stale beads for a repo
+#   stale-beads --install-view    create a live `stale_beads` view in the repo's
+#                                  Dolt DB so you can eyeball it in Dolt Workbench
+#                                  or the CLI:  SELECT * FROM stale_beads;
+set -uo pipefail
+case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"; exit 0;; esac
+
+hours="${UNLAZY_STALE_HOURS:-2}"
+install_view=0
+[[ "${1:-}" == "--install-view" ]] && { install_view=1; shift || true; }
+
+repo_root="$(git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null || echo "${1:-$PWD}")"
+beads_dir="$repo_root/.beads"
+[[ -d "$beads_dir" ]] || exit 0
+command -v dolt >/dev/null 2>&1 || exit 0
+
+port_file="$beads_dir/dolt-server.port"
+[[ -f "$port_file" ]] || exit 0
+port="$(cat "$port_file")"
+db="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("dolt_database",""))' "$beads_dir/metadata.json" 2>/dev/null || true)"
+[[ -n "$db" ]] || exit 0
+
+dsql() { dolt --port "$port" --host 127.0.0.1 --no-tls sql -q "$1" -r csv 2>/dev/null; }
+
+if (( install_view )); then
+  if dolt --port "$port" --host 127.0.0.1 --no-tls sql -q \
+      "use \`$db\`; create or replace view stale_beads as
+         select id, title, owner, started_at,
+                timestampdiff(HOUR, started_at, utc_timestamp()) as hours_open, is_blocked
+         from issues
+         where status='in_progress' and started_at is not null
+           and started_at < utc_timestamp() - interval $hours hour;" >/dev/null 2>&1; then
+    echo "created view \`$db\`.stale_beads  (SELECT * FROM stale_beads;)"
+  else
+    echo "stale-beads: could not create view" >&2; exit 1
+  fi
+  exit 0
+fi
+
+dsql "select id, timestampdiff(HOUR, started_at, utc_timestamp()) as h, title
+      from \`$db\`.issues
+      where status='in_progress' and started_at is not null
+        and started_at < utc_timestamp() - interval $hours hour
+      order by started_at" | python3 -c '
+import sys, csv
+r = csv.reader(sys.stdin); next(r, None)
+for row in r:
+    if len(row) >= 3:
+        print(f"  {row[0]}  ({row[1]}h)  {row[2]}")'

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# beads_gen — create a beads graph from a plan.json and render a mermaid review chart.
+#
+# Step 1 of the two-command materialize flow (step 2 is ul_gates_gen).
+# Re-runnable overwrite: on re-run it deletes the beads recorded in the sidecar
+# manifest, then recreates from the (possibly edited) plan.json.
+#
+# Usage:
+#   beads_gen <plan.json>        # run from inside the target repo (bd needs its .beads)
+#
+# Sidecars written next to plan.json:
+#   <plan>.beads.json   manifest — JSON array of the bead IDs this plan created
+#   <plan>.graph.md     mermaid chart (blue →o = parent-child, red ⇒ = blocks) to review
+set -euo pipefail
+case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"; exit 0;; esac
+
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+RENDER="$HERE/render_mermaid.py"
+WBS="$HERE/wbs_prefix.py"
+
+die() { echo "beads_gen: $*" >&2; exit 2; }
+
+[[ $# -ge 1 ]] || die "usage: beads_gen <plan.json> [--no-wbs]"
+plan="$(readlink -f "$1")"; shift
+wbs=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-wbs) wbs=0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+[[ -f "$plan" ]] || die "plan not found: $plan"
+command -v bd >/dev/null || die "bd not on PATH"
+[[ -f "$RENDER" ]] || die "renderer not found: $RENDER"
+
+# Preflight: require a pinned issue-prefix so beads/gates stay attributable on the shared Dolt server.
+bd config get issue-prefix 2>/dev/null | grep -q '(not set)' &&
+  die "issue-prefix is not pinned for this repo — beads would take a fragile auto-detected prefix.
+     Pin it first:  bd config set issue-prefix <name>   (e.g. $(basename "$(pwd)"))"
+
+base="${plan%.json}"
+manifest="$base.beads.json"
+chart="$base.graph.md"
+
+ids_now() {
+  bd list --all --json 2>/dev/null |
+    python3 -c "import sys,json;print('\n'.join(i['id'] for i in json.load(sys.stdin)))"
+}
+
+# Overwrite: delete beads created by a previous run of this plan.
+if [[ -f "$manifest" ]]; then
+  echo "beads_gen: overwrite — deleting previous beads from $(basename "$manifest")"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && bd delete "$id" --force >/dev/null 2>&1 || true
+  done < <(python3 -c "import json;[print(x) for x in json.load(open('$manifest'))]")
+fi
+
+before="$(ids_now | sort)"
+# WBS: create from a temp plan with self-describing titles; never mutate plan.json.
+create_plan="$plan"
+if [[ $wbs -eq 1 && -f "$WBS" ]]; then
+  create_plan="$(mktemp --suffix=.json)"
+  python3 "$WBS" "$plan" > "$create_plan"
+fi
+bd create --graph "$create_plan" >/dev/null
+[[ "$create_plan" != "$plan" ]] && rm -f "$create_plan"
+after="$(ids_now | sort)"
+created="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
+[[ -n "$created" ]] || die "no beads created (check plan.json schema)"
+
+# Record manifest (JSON array) and render the review chart.
+python3 -c "import json,sys;json.dump(sys.stdin.read().split(),open('$manifest','w'),indent=0)" <<<"$created"
+{
+  echo "# Plan graph — $(basename "$base")"
+  echo
+  echo "_blue →o (circle) = parent-child · red ⇒ (fat) = blocks. Review before generating gates._"
+  echo
+  echo '```mermaid'
+  python3 "$RENDER" "$manifest"
+  echo '```'
+} > "$chart"
+
+echo "beads_gen: created $(printf '%s\n' "$created" | wc -l) bead(s)"
+echo "  manifest: $manifest"
+echo "  chart:    $chart   (open in Markdown preview to review)"
+echo "  next:     ul_gates_gen $(basename "$plan")   # after you approve the chart"

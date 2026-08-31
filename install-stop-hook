@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# install-stop-hook — arm the unlazy Stop hook (default ON) for VS Code Copilot.
+#   * writes agent-hooks.json (Stop -> stop-gate) in the shared asset dir;
+#   * registers it in VS Code user settings (chat.hookFilesLocations, approved;
+#     chat.useHooks = true) by ABSOLUTE path — VS Code strips ~/ keys;
+#   * writes an "armed" line to ~/.unlazy/hook-status.log — the durable trace
+#     that survives even if the feature is later blocked (the "tried" record);
+#   * symlinks hook-doctor + stale-beads into ~/.local/bin.
+# Idempotent. Undo with: install-stop-hook --disarm
+set -euo pipefail
+case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"; exit 0;; esac
+
+UNLAZY_HOME="${UNLAZY_HOME:-$HOME}"
+[ -r "$UNLAZY_HOME/.agents/unlazy-beads-rtk/env.sh" ] && . "$UNLAZY_HOME/.agents/unlazy-beads-rtk/env.sh"
+UNLAZY_HOME="${UNLAZY_HOME:-$HOME}"
+
+asset="$UNLAZY_HOME/.agents/unlazy-beads-rtk"
+state="${UNLAZY_STATE:-$UNLAZY_HOME/.unlazy}"
+cfg="$asset/agent-hooks.json"
+settings="$UNLAZY_HOME/.vscode-server/data/User/settings.json"
+bindir="$UNLAZY_HOME/.local/bin"
+now="$(date -Is)"
+mkdir -p "$state" "$bindir"
+
+disarm=0
+[[ "${1:-}" == "--disarm" ]] && disarm=1
+
+# hook config (absolute command path — must not use ~)
+cat > "$cfg" <<JSON
+{
+  "hooks": {
+    "Stop": [
+      { "type": "command", "command": "$asset/hooks/stop-gate", "timeout": 20 }
+    ]
+  }
+}
+JSON
+
+# merge into VS Code user settings (preserve everything else)
+python3 - "$settings" "$cfg" "$disarm" <<'PY'
+import json, os, sys
+settings_path, cfg_path, disarm = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+try:
+    with open(settings_path) as f:
+        s = json.load(f)
+except Exception:
+    s = {}
+loc = s.get("chat.hookFilesLocations") or {}
+if disarm:
+    loc.pop(cfg_path, None)
+else:
+    loc[cfg_path] = True          # true = pre-approved location
+    s["chat.useHooks"] = True     # master toggle, default ON
+s["chat.hookFilesLocations"] = loc
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+with open(settings_path, "w") as f:
+    json.dump(s, f, indent=2)
+    f.write("\n")
+print(("disarmed" if disarm else "armed") + " in " + settings_path)
+PY
+
+# symlink user commands + ensure executables
+for c in hook-doctor stale-beads; do
+  chmod +x "$asset/$c"
+  ln -sf "$asset/$c" "$bindir/$c"
+done
+chmod +x "$asset/hooks/stop-gate"
+
+if (( disarm )); then
+  printf '%s\tdisarmed\t%s\n' "$now" "$cfg" >> "$state/hook-status.log"
+  echo "Stop hook disarmed. Reload the VS Code window to apply."
+else
+  printf '%s\tarmed\t%s\n' "$now" "$cfg" >> "$state/hook-status.log"
+  echo "Stop hook armed (default ON). Reload the VS Code window; approve the hook if prompted."
+  echo "  trace : $state/hook-status.log"
+  echo "  health: hook-doctor"
+fi

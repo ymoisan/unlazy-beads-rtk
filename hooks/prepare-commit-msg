@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# prepare-commit-msg — append a "Beads closed" summary trailer to the commit
+# message. Annotates only; never creates or amends commits. No-op if nothing
+# closed or if the repo has no .beads.
+msg_file="$1"
+DEVLOG="$HOME/.agents/unlazy-beads-rtk/devlog_update"
+[[ -x "$DEVLOG" ]] || exit 0
+trailer="$("$DEVLOG" --trailer 2>/dev/null || true)"
+[[ -n "$trailer" ]] && printf '\n%s\n' "$trailer" >> "$msg_file"
+exit 0

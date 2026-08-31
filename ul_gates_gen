@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ul_gates_gen — scaffold an unlazy gate ledger for each LEAF bead of a plan.
+#
+# Step 2 of the two-command materialize flow (step 1 is beads_gen). Run it only
+# after you have reviewed <plan>.graph.md and are happy with the tree.
+#
+# A bead is a LEAF when no other bead in the manifest names it as a parent (via a
+# parent-child dependency). Only leaves get a runnable gate ledger; branch/epic
+# beads carry integration gates you add by hand with `gate <id> --new`.
+#
+# Usage:
+#   ul_gates_gen <plan.json>     # run from inside the same repo as beads_gen
+set -euo pipefail
+case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"; exit 0;; esac
+
+die() { echo "ul_gates_gen: $*" >&2; exit 2; }
+
+[[ $# -ge 1 ]] || die "usage: ul_gates_gen <plan.json>"
+plan="$(readlink -f "$1")"
+base="${plan%.json}"
+manifest="$base.beads.json"
+[[ -f "$manifest" ]] || die "no manifest ($manifest) — run beads_gen first"
+command -v gate >/dev/null || die "gate not on PATH"
+
+# Leaves = manifest beads that are nobody's parent (parent-child edges come from
+# `bd dep list <id> --json`, since graph-created IDs are flat, not dotted).
+mapfile -t leaves < <(python3 - "$manifest" <<'PY'
+import json, subprocess, sys
+ids = json.load(open(sys.argv[1]))
+idset = set(ids)
+parents = set()
+for i in ids:
+    out = subprocess.run(["bd", "dep", "list", i, "--json"], capture_output=True, text=True).stdout.strip()
+    for d in (json.loads(out) if out else []):
+        if d.get("dependency_type") == "parent-child" and d.get("id") in idset:
+            parents.add(d["id"])
+print("\n".join(i for i in ids if i not in parents))
+PY
+)
+[[ ${#leaves[@]} -gt 0 ]] || die "no leaf beads found"
+
+n=0
+for id in "${leaves[@]}"; do
+  if gate "$id" --new >/dev/null 2>&1; then
+    n=$((n + 1))
+    echo "  + $id"
+  else
+    echo "  (skip $id — ledger already exists)"
+  fi
+done
+
+echo "ul_gates_gen: scaffolded $n new leaf ledger(s) of ${#leaves[@]} leaves"
+echo "  edit each .beads/gates/<id>.md, then: gate <id> --lint && gate <id> --approve"

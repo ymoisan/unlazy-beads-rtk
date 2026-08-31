@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# stop-gate — unlazy Stop hook (fires when an agent session ends).
+#   1. Heartbeat   — proves the hook actually fired (durable trace in ~/.unlazy/).
+#   2. Gate-enforce — blocks a clean stop (exit 2) when an in-progress bead in
+#      this repo has an unsatisfied gate ledger, forcing a handoff not a silent
+#      exit.
+#   3. Staleness   — warns (non-blocking) about in-progress beads older than
+#      UNLAZY_STALE_HOURS (default 2h). Re-emitted every session until closed.
+# Reads a JSON event on stdin (cwd, session_id); writes JSON on stdout, or
+# exits 2 to block the stop. Armed (default ON) by: install-stop-hook
+set -uo pipefail
+
+UNLAZY_HOME="${UNLAZY_HOME:-$HOME}"
+[ -r "$UNLAZY_HOME/.agents/unlazy-beads-rtk/env.sh" ] && . "$UNLAZY_HOME/.agents/unlazy-beads-rtk/env.sh"
+UNLAZY_HOME="${UNLAZY_HOME:-$HOME}"
+
+state="${UNLAZY_STATE:-$UNLAZY_HOME/.unlazy}"
+mkdir -p "$state"
+now="$(date -Is)"
+log="$state/hook-status.log"
+
+payload="$(cat 2>/dev/null || true)"
+printf '%s' "$payload" > "$state/.last-stop-payload"   # raw event, for debugging field names
+
+# Extract cwd and any session-id-ish key, regardless of casing (VS Code and
+# Claude disagree on session_id vs sessionId, and the key may change).
+cwd="$(printf '%s' "$payload" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: d = {}
+print(d.get("cwd") or d.get("workspaceRoot") or "" if isinstance(d, dict) else "")
+' 2>/dev/null || true)"; [[ -n "$cwd" ]] || cwd="$PWD"
+sid="$(printf '%s' "$payload" | python3 -c '
+import sys, json, re
+try: d = json.load(sys.stdin)
+except Exception: d = {}
+if isinstance(d, dict):
+    for k, v in d.items():
+        if v and re.search(r"session.?id", str(k), re.I):
+            print(v); break
+' 2>/dev/null || true)"; [[ -n "$sid" ]] || sid="?"
+
+# (1) heartbeat + trace — written unconditionally, even if we block below.
+printf '%s\tsid=%s\tcwd=%s\n' "$now" "$sid" "$cwd" > "$state/.stop-heartbeat"
+printf '%s\tfired\tStop\tsid=%s\n' "$now" "$sid" >> "$log"
+
+repo_root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")"
+beads_dir="$repo_root/.beads"
+if [[ ! -d "$beads_dir" ]] || ! command -v bd >/dev/null 2>&1; then
+  echo '{"continue": true}'; exit 0
+fi
+
+CHECKER="${UNLAZY_SKILL_DIR:-$UNLAZY_HOME/.agents/skills/unlazy}/scripts/gate_check.py"
+
+# (2) gate-enforce: in-progress beads whose ledger does not pass --status
+ip_ids="$(bd list --all --json 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: d = []
+items = d.get("issues", d) if isinstance(d, dict) else d
+for it in items or []:
+    if isinstance(it, dict) and it.get("status") == "in_progress":
+        print(it.get("id", ""))
+' 2>/dev/null || true)"
+
+unmet=""
+if [[ -f "$CHECKER" ]]; then
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    ledger="$beads_dir/gates/$id.md"
+    [[ -f "$ledger" ]] || continue
+    python3 "$CHECKER" --status --root "$repo_root" "$ledger" >/dev/null 2>&1 \
+      || unmet="$unmet $id"
+  done <<< "$ip_ids"
+fi
+
+# (3) staleness
+stale="$("$UNLAZY_HOME/.agents/unlazy-beads-rtk/stale-beads" "$repo_root" 2>/dev/null || true)"
+
+if [[ -n "${unmet// }" ]]; then
+  {
+    echo "unlazy Stop gate: in-progress bead(s) with unsatisfied gates:$unmet"
+    echo "Satisfy them (gate <id> --close) or hand off. Not stopping clean."
+    [[ -n "$stale" ]] && { echo "Also stale (> ${UNLAZY_STALE_HOURS:-2}h):"; echo "$stale"; }
+  } >&2
+  printf '%s\tblocked\tunmet=%s\n' "$now" "${unmet# }" >> "$log"
+  exit 2
+fi
+
+if [[ -n "$stale" ]]; then
+  python3 -c '
+import json, sys
+hours, body = sys.argv[1], sys.argv[2]
+print(json.dumps({"continue": True,
+  "systemMessage": "\u26a0 unlazy: stale in-progress beads (> %sh). Close or un-claim:\n%s" % (hours, body)}))
+' "${UNLAZY_STALE_HOURS:-2}" "$stale"
+  exit 0
+fi
+
+echo '{"continue": true}'
+exit 0

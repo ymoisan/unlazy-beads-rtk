@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# hook-doctor — report unlazy Stop-hook health and any stale beads. Run at the
+# start of a session (an always-on instruction does this). Detects the
+# "armed but never fired" case — the durable signal that the VS Code hooks
+# feature is blocked/unsupported and gate-enforcement is NOT actually running.
+#
+# Verdicts: OK | UNCONFIRMED | INACTIVE | NOT-ARMED  (appended to hook-status.log)
+set -uo pipefail
+case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"; exit 0;; esac
+
+UNLAZY_HOME="${UNLAZY_HOME:-$HOME}"
+[ -r "$UNLAZY_HOME/.agents/unlazy-beads-rtk/env.sh" ] && . "$UNLAZY_HOME/.agents/unlazy-beads-rtk/env.sh"
+UNLAZY_HOME="${UNLAZY_HOME:-$HOME}"
+
+state="${UNLAZY_STATE:-$UNLAZY_HOME/.unlazy}"
+mkdir -p "$state"
+now="$(date -Is)"
+log="$state/hook-status.log"
+hb="$state/.stop-heartbeat"
+ss="$state/.session-start"
+
+armed="$(grep -m1 $'\tarmed\t' "$log" 2>/dev/null | cut -f1 || true)"
+hb_time="$( [[ -f "$hb" ]] && head -1 "$hb" | cut -f1 || true )"
+last_start="$( [[ -f "$ss" ]] && head -1 "$ss" | cut -f1 || true )"
+
+# Inference (hook-independent): consecutive session starts with no heartbeat in
+# between mean the Stop hook did not fire -> INACTIVE.
+verdict=OK
+if   [[ -z "$armed" ]]; then verdict=NOT-ARMED
+elif [[ -z "$hb_time" ]]; then
+  [[ -n "$last_start" ]] && verdict=INACTIVE || verdict=UNCONFIRMED
+elif [[ -n "$last_start" && "$hb_time" < "$last_start" ]]; then verdict=INACTIVE
+fi
+
+case "$verdict" in
+  OK)          echo "unlazy Stop hook: OK — last fired ${hb_time}." ;;
+  UNCONFIRMED) echo "unlazy Stop hook: armed ${armed}, not yet confirmed. End and restart a session once to record the first heartbeat." ;;
+  INACTIVE)    echo "⚠ unlazy Stop hook INACTIVE — armed ${armed} but no heartbeat since the last session start (${last_start:-?}). The VS Code hooks feature is likely policy-disabled or unsupported: gate-enforcement is NOT running. Trace: $log" ;;
+  NOT-ARMED)   echo "unlazy Stop hook: not installed. Run: install-stop-hook" ;;
+esac
+printf '%s\tdoctor\t%s\n' "$now" "$verdict" >> "$log"
+
+stale="$("$UNLAZY_HOME/.agents/unlazy-beads-rtk/stale-beads" "$PWD" 2>/dev/null || true)"
+[[ -n "$stale" ]] && { echo "stale in-progress beads (> ${UNLAZY_STALE_HOURS:-2}h) — close or un-claim:"; echo "$stale"; }
+
+# advance the session-start marker LAST, so this run compared against the prior one
+printf '%s\tsid=%s\n' "$now" "${1:-session}" > "$ss"
