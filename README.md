@@ -65,6 +65,30 @@ cp ~/.agents/unlazy-beads-rtk/GATES.template.md GATES.md
 See [WALKTHROUGH.md](WALKTHROUGH.md) for the full model and the trace/verdict
 mechanics.
 
+## Light usage (beads-only)
+
+The two halves of this repo are independent, and for small projects you can
+adopt **just the beads half**:
+
+- **Decompose the work into beads** (`bd create`, `bd ready`, `bd close`) so the
+  work is *remembered* across sessions, and let that bead trail shape meaningful
+  commit messages that convey *how* things were actually built.
+- **Skip the gate/enforcement half** — no `GATES.md`, no `gate`, no Stop hook.
+  You lose only the automatic "a bead can't close until its CHECK passes"
+  guarantee, which matters most for long, agent-driven work. In chat-only work
+  on a small repo you review each step yourself, so that guarantee adds little.
+
+Two practical notes:
+
+- Under **VS Code / Copilot** the Stop hook isn't executed anyway, so even when
+  it's "armed" nothing fires automatically; the enforcement layer is mainly for
+  runners that honor Stop hooks (Claude Code, Codex) or when you invoke
+  `hook-doctor` / `gate` by hand. That reinforces: for light usage, beads +
+  disciplined commits is the whole story.
+- The gate layer is **additive and per-repo** — you can drop a `GATES.md` into a
+  project later, the day a task grows big enough to want fail-closed checks,
+  without changing anything you've already done.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
