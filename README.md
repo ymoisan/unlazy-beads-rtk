@@ -18,6 +18,71 @@ It wires together three ideas:
 > scripts are tool-agnostic shell; the VS Code wiring lives in a thin install
 > layer so other tools (Copilot CLI, Claude Code, Codex) can be adapted later.
 
+## Which runner? (why VS Code / Copilot caps out)
+
+This repo runs today under **VS Code / Copilot**, but that is the *least*
+automatable host for beads — worth knowing before you invest in heavy-duty,
+many-agent workflows, which it **cannot** do.
+
+**What stock VS Code / Copilot *can* do** — no CLI, no MCP, all local and
+policy-friendly:
+
+- Run the shell tools (`gate`, `hook-doctor`, `stale-beads`) in the integrated
+  terminal, plus the **git-native devlog hooks** that fire on every `git commit`.
+  None of this needs a server, MCP, or elevated permissions.
+- Drive beads from an agent-mode session — the agent can loop `bd create` /
+  `--claim` / `bd close` and run `gate <id> --close` within one conversation.
+- Bake the discipline into `copilot-instructions.md` / `AGENTS.md` so the agent
+  *self-runs* `hook-doctor` at session start and `gate --close` before closing —
+  a prompt-level stand-in for the Stop hook it can't fire.
+
+**What it *can't* do:**
+
+- **Stop hooks don't execute**, so there's no fail-closed "you can't stop with an
+  unmet gate" enforcement — only the pull-based `hook-doctor` you invoke.
+- It's a **single interactive session**, not a headless orchestrator. The
+  many-agents-draining-a-ready-queue pattern (parallel claims across worktrees,
+  hooks firing between steps) isn't reachable here.
+
+**What a CLI runner unlocks** — Claude Code, Codex CLI, Copilot CLI:
+
+- They **execute Stop hooks**, so the gate becomes real fail-closed enforcement.
+- They run **headless and in parallel**, so multiple agents can fan out against
+  beads' dependency-aware ready queue (`bd ready` → claim → close, in a loop).
+  This is the "beads at scale" automation you may have seen from heavy users.
+- beads is **runner-agnostic** — the automation ceiling is set by the *runner*,
+  not by beads or this repo. Point a CLI runner at the same `.beads/` and the
+  fleet tier opens up, gates and all.
+
+**Org reality.** Many orgs disable Copilot-CLI, MCP, and similar, leaving you on
+stock VS Code / Copilot. If that's you, the fleet tier is out of reach — but the
+combination above (git hooks + shell scripts + strong custom instructions) is a
+real step up from unstructured chat, and every piece is local and
+policy-friendly. The adapter seam is deliberately thin, so the day your
+toolchain allows a CLI runner, the same `.beads/` and gates carry over unchanged.
+
+## Usage at a glance
+
+Two independent halves — pick per project:
+
+| | **Full usage** | **Light usage** |
+|---|---|---|
+| Track work as beads | ✅ | ✅ |
+| Commit trailer + rolling `.beads/DEVLOG.md` | ✅ | ✅ |
+| How a bead closes | `gate <id> --close` — reverifies the acceptance CHECK, then `bd close` **only if it passes** (refuses otherwise) | `bd close <id>` — you close it directly; *you* are the reviewer |
+| Stop-hook enforcement (blocks a "done" that isn't) | ✅ *(only where Stop hooks run)* | — |
+| Best for | long / agent-driven work | small / chat-only work |
+
+**Nothing ever closes a bead by itself.** Even full usage is *you* running
+`gate --close`; the automation is a *verified* close, not a *background* one.
+
+**Seeing when to intervene is pull, not push.** The only push is the Stop hook
+firing — and that fires only in runners that execute Stop hooks (Claude Code,
+Codex), **not VS Code / Copilot**. Everywhere else you poll: run `hook-doctor`
+at session start (armed / heartbeat / stale beads / unmet gates), plus
+`bd ready` / `bd list --status in_progress`. Treat it like a manual daemon you
+check periodically.
+
 ## Layout
 
 | Path | Role |
@@ -62,32 +127,8 @@ bd init                           # creates .beads/ (Dolt-backed issue store)
 cp ~/.agents/unlazy-beads-rtk/GATES.template.md GATES.md
 ```
 
-See [WALKTHROUGH.md](WALKTHROUGH.md) for the full model and the trace/verdict
-mechanics.
-
-## Light usage (beads-only)
-
-The two halves of this repo are independent, and for small projects you can
-adopt **just the beads half**:
-
-- **Decompose the work into beads** (`bd create`, `bd ready`, `bd close`) so the
-  work is *remembered* across sessions, and let that bead trail shape meaningful
-  commit messages that convey *how* things were actually built.
-- **Skip the gate/enforcement half** — no `GATES.md`, no `gate`, no Stop hook.
-  You lose only the automatic "a bead can't close until its CHECK passes"
-  guarantee, which matters most for long, agent-driven work. In chat-only work
-  on a small repo you review each step yourself, so that guarantee adds little.
-
-Two practical notes:
-
-- Under **VS Code / Copilot** the Stop hook isn't executed anyway, so even when
-  it's "armed" nothing fires automatically; the enforcement layer is mainly for
-  runners that honor Stop hooks (Claude Code, Codex) or when you invoke
-  `hook-doctor` / `gate` by hand. That reinforces: for light usage, beads +
-  disciplined commits is the whole story.
-- The gate layer is **additive and per-repo** — you can drop a `GATES.md` into a
-  project later, the day a task grows big enough to want fail-closed checks,
-  without changing anything you've already done.
+See [WALKTHROUGH.md](WALKTHROUGH.md) for the full model, the trace/verdict
+mechanics, and the full-vs-light usage details (§11).
 
 ## License
 
