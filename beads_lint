@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""beads_lint <plan.json> — structural integrity gate for a beads graph plan.
+
+Pure analysis of plan.json BEFORE any beads are created: catches malformed
+graphs (cycles, danglers, self-deps, schema violations) so beads_gen can refuse
+to build a broken plan instead of minting 17 beads and failing halfway.
+Scope is INTEGRITY, not INTENT: it proves the DAG is well-formed and startable.
+It cannot know whether the ordering is *correct* (e.g. two steps wrongly made
+parallel) — that stays a human/semantic review (mermaid chart + blocks table).
+
+Exit codes: 0 = clean (warnings allowed), 3 = structural error(s), 2 = usage.
+
+Usage:
+  beads_lint <plan.json>
+"""
+import json
+import sys
+from pathlib import Path
+
+ALLOWED_TYPES = {"epic", "task", "bug", "feature", "chore", "decision"}
+ALLOWED_GATES = {"run", "manual", "none"}
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0 if argv else 2)
+
+    plan_path = Path(argv[0]).resolve()
+    if not plan_path.is_file():
+        print(f"beads_lint: plan not found: {plan_path}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        plan = json.loads(plan_path.read_text())
+    except json.JSONDecodeError as e:
+        print(f"beads_lint: invalid JSON: {e}", file=sys.stderr)
+        sys.exit(3)
+
+    nodes = plan.get("nodes") or []
+    edges = plan.get("edges") or []
+    errors = []
+    warns = []
+
+    # ---- node-level checks -------------------------------------------------
+    keys = [n.get("key") for n in nodes]
+    seen = set()
+    for k in keys:
+        if k in seen:
+            errors.append(f"duplicate node key: {k!r}")
+        seen.add(k)
+    by_key = {n.get("key"): n for n in nodes}
+
+    for n in nodes:
+        k = n.get("key")
+        if not k:
+            errors.append(f"node missing 'key': {n.get('title', n)!r}")
+        if not n.get("title"):
+            errors.append(f"node {k!r} missing 'title'")
+        t = n.get("type", "task")
+        if t not in ALLOWED_TYPES:
+            warns.append(f"node {k!r} has unusual type {t!r} (allowed: {', '.join(sorted(ALLOWED_TYPES))})")
+        if "priority" in n and not isinstance(n["priority"], int):
+            errors.append(f"node {k!r} priority must be an integer, got {type(n['priority']).__name__} "
+                          f"({n['priority']!r}) — bd rejects string priorities")
+        pk = n.get("parent_key")
+        if pk is not None and pk not in by_key:
+            errors.append(f"node {k!r} parent_key {pk!r} references an unknown node")
+        g = n.get("gate")
+        if g is not None and g not in ALLOWED_GATES:
+            errors.append(f"node {k!r} has invalid gate {g!r} "
+                          f"(allowed: {', '.join(sorted(ALLOWED_GATES))})")
+
+    # ---- gate intent placement (warn-only) ---------------------------------
+    parents = {n.get("parent_key") for n in nodes if n.get("parent_key") in by_key}
+    for n in nodes:
+        k = n.get("key")
+        g = n.get("gate")
+        is_leaf = k not in parents
+        is_container = (k in parents) or (n.get("type") == "epic")
+        if is_leaf and g in (None, "none"):
+            warns.append(f"leaf node {k!r} has no gate (gate:none) — verification is trust-only; intended?")
+        if is_container and g == "run":
+            warns.append(f"node {k!r} is a container/epic with a runnable gate — gates usually belong on leaves")
+
+    # ---- edge-level checks -------------------------------------------------
+    blocks = []  # (A, B) meaning A depends on B (B must finish first)
+    for e in edges:
+        a, b, et = e.get("from_key"), e.get("to_key"), e.get("type", "blocks")
+        if a not in by_key:
+            errors.append(f"edge from_key {a!r} references an unknown node")
+        if b not in by_key:
+            errors.append(f"edge to_key {b!r} references an unknown node")
+        if a == b:
+            errors.append(f"self-dependency: node {a!r} blocks itself")
+        if et != "blocks":
+            warns.append(f"edge {a!r}->{b!r} has type {et!r}; beads_lint only schedules 'blocks'")
+        if a in by_key and b in by_key and a != b and et == "blocks":
+            blocks.append((a, b))
+
+    # ---- parent_key hierarchy cycle ---------------------------------------
+    def ancestors(k):
+        chain, cur, guard = set(), by_key.get(k, {}).get("parent_key"), 0
+        while cur is not None and guard < len(nodes) + 1:
+            if cur in chain:
+                return chain, True  # loop
+            chain.add(cur)
+            cur = by_key.get(cur, {}).get("parent_key")
+            guard += 1
+        return chain, False
+
+    for n in nodes:
+        _, looped = ancestors(n.get("key"))
+        if looped:
+            errors.append(f"parent_key hierarchy cycle through node {n.get('key')!r}")
+            break
+
+    # ---- blocks-edge cycle (deadlock / unstartable) ------------------------
+    adj = {}
+    for a, b in blocks:
+        adj.setdefault(a, set()).add(b)
+
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {k: WHITE for k in by_key}
+    cycle_path = []
+
+    def dfs(u, stack):
+        color[u] = GREY
+        stack.append(u)
+        for v in adj.get(u, ()):
+            if color.get(v) == GREY:
+                cycle_path.extend(stack[stack.index(v):] + [v])
+                return True
+            if color.get(v) == WHITE and dfs(v, stack):
+                return True
+        stack.pop()
+        color[u] = BLACK
+        return False
+
+    for k in by_key:
+        if color[k] == WHITE and dfs(k, []):
+            errors.append("blocks-edge cycle (deadlock — nothing can ever be ready): "
+                          + " -> ".join(cycle_path))
+            break
+
+    # startable: at least one node depends on nothing (only meaningful without a cycle)
+    depended = {a for a, _ in blocks}
+    if nodes and not cycle_path and depended and len(depended) == len(by_key):
+        errors.append("no startable node: every node has a blocks-dependency (unstartable graph)")
+
+    # ---- warnings: redundant transitive blocks edges -----------------------
+    def reachable(src, dst, banned):
+        stack, seen_r = [src], set()
+        while stack:
+            u = stack.pop()
+            for v in adj.get(u, ()):
+                if (u, v) == banned:
+                    continue
+                if v == dst:
+                    return True
+                if v not in seen_r:
+                    seen_r.add(v)
+                    stack.append(v)
+        return False
+
+    for a, b in blocks:
+        if reachable(a, b, banned=(a, b)):
+            warns.append(f"redundant blocks edge {a!r}->{b!r}: {b!r} already reachable transitively")
+
+    # ---- warnings: blocks edge crossing parent-child lineage ---------------
+    for a, b in blocks:
+        anc_a, _ = ancestors(a)
+        anc_b, _ = ancestors(b)
+        if b in anc_a or a in anc_b:
+            warns.append(f"blocks edge {a!r}->{b!r} crosses parent-child lineage (bd may reject)")
+
+    # ---- report ------------------------------------------------------------
+    print(f"beads_lint: {plan_path.name} — {len(nodes)} nodes, {len(blocks)} blocks-edge(s)")
+    for w in warns:
+        print(f"  ! WARN  {w}")
+    for e in errors:
+        print(f"  ✗ ERROR {e}")
+    if errors:
+        print(f"FAIL: {len(errors)} structural error(s)")
+        sys.exit(3)
+    print("OK: graph is well-formed and startable" + (f" ({len(warns)} warning(s))" if warns else ""))
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

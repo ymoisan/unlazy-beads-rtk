@@ -51,11 +51,13 @@ plan.json ──beads_gen──▶ beads graph (Dolt)  +  plan.graph.md (mermaid
 
 | Tool | Purpose |
 |------|---------|
-| `beads_gen <plan.json>` | Create the beads graph from a plan; render `plan.graph.md`; write `plan.beads.json` manifest. Re-runnable (overwrites prior beads via manifest). Preflight refuses to run unless `issue-prefix` is pinned. |
+| `beads_gen <plan.json>` | Create the beads graph from a plan; render `plan.graph.md`; write `plan.beads.json` manifest. **Pre-create hard gate: runs `beads_lint` first and refuses to create/delete anything on a malformed graph (`--no-gate` overrides).** **Emits two review gates on every run: the mermaid chart + an inline `beads_verify` blocks table.** These two outputs are a **human stop point**, not a status print — present them and get explicit WBS/ordering sign-off before proposing or starting any implementation (see §10). Re-runnable (overwrites prior beads via manifest). Preflight refuses to run unless `issue-prefix` is pinned. |
+| `beads_lint <plan.json>` | **Structural integrity gate** (pure plan.json analysis, no bd): flags cycles (deadlock), danglers, self-deps, bad parent_key, string priorities, unstartable graphs; warns on redundant/lineage-crossing edges. Also validates the optional `gate` field (errors on an invalid value; warns on an ungated leaf or a gated container/epic). Exit 3 on error, 0 clean. Auto-invoked by `beads_gen` before creation; also standalone. Checks **integrity, not intent**. |
+| `beads_verify <plan.json>` | Print the WBS-sorted **blocks** table for the plan's beads (scoped via the manifest): each bead's blocked-by set, a `GATE` column (`run`/`manual`/`—`), `← READY` flags, and cross-plan anomalies. Auto-invoked by `beads_gen`; also runnable standalone. `bd ready` stays authoritative. |
 | `ul_gates_gen <plan.json>` | Scaffold a gate ledger for each **leaf** (node with no children), detected via parent-child edges. |
 | `gate <id> [verb]` | Gate lifecycle: `--new`, `--lint`, `--approve`, reverify (default), `--close`. |
-| `render_mermaid.py <manifest>` | Render the review chart (helper). |
-| `wbs_prefix.py <plan.json>` | Add `[E1.T1.T1]` WBS codes to titles + `wbs:` labels (helper, used by beads_gen). |
+| `render_mermaid.py <manifest>` | Render the review chart (helper) — edge colours + gate badges (🔒/👁). |
+| `wbs_prefix.py <plan.json>` | Add `[E1.T1.T1]` WBS codes to titles + `wbs:` labels, and `gate:` labels from each node's `gate` field (helper, used by beads_gen). |
 | `devlog_update --trailer` / `--commit <sha>` | Devlog trace: trailer summary (read-only) / append DEVLOG.md entry + advance watermark. |
 | `install-devlog-hooks [repo]` | Chain-safe symlink of prepare-commit-msg + post-commit hooks. |
 | `hooks/stop-gate` | VS Code **Stop** hook (fires at session end): gate-enforce (blocks a clean stop, `exit 2`), staleness warn, heartbeat. Not called directly. |
@@ -91,11 +93,20 @@ themselves carry no personal path — only `$UNLAZY_HOME`.
   finish first; a blocks c).
 - Accepted node fields: `key, title, type, parent_key, priority, labels, description`.
   **Nodes carry no acceptance field** — acceptance lives in the gate ledger.
+- `priority` is an **integer** (0–4, 0 = highest); a JSON string fails to parse.
+- Optional **`gate`** per node declares verification *intent*: `"run"` (a runnable
+  CHECK), `"manual"` (a human EVIDENCE gate), or `"none"` (deliberately ungated).
+  `beads_gen` consumes it (bd never sees it) and stamps a `gate:<kind>` label,
+  surfaced as a chart badge (🔒/👁) and a `GATE` column in the blocks table.
+  `beads_lint` errors on an invalid value and *warns* (never blocks) on a leaf
+  with no gate or a container/epic carrying a runnable gate. Intent only — the
+  ledger still decides whether a gate actually passes.
 
 ## 5. Chart legend (mermaid)
 
 - **parent-child (kin):** thin **blue** line, **circle** head — `parent --o child`
 - **blocks:** fat **red** line, **arrow** head — `blocker ==> blocked`
+- **gate badge (node prefix):** 🔒 = runnable gate · 👁 = manual (EVIDENCE) gate · no badge = ungated
 
 Shape + colour + weight all differ, so the chart reads without a legend.
 
@@ -394,11 +405,32 @@ With a pinned prefix, both beads **and** their gate ledgers are guaranteed
 attributable whether gates stay per-repo (`$repo_root/.beads/gates/`) or move to a
 global `~/.beads`.
 
+**Gotcha — a `--stealth` re-init can reset `beads.role` to `contributor`.** In
+that state `bd` hydrates reads from a *different* store than the one it writes to,
+so `bd list`/`bd ready` can look stale or empty while the real DB is fine. Re-pin
+after any `--stealth` init:
+
+```bash
+git config --local beads.role maintainer   # restore read/write against the real DB
+bd list                                     # confirm the graph is visible again
+```
+
 ---
 
 ## 10. Conventions
 
 - Run `bd` only in the integrated terminal (never MCP).
+- **After `beads_gen`, stop at the review gate.** Show the mermaid chart + the
+  `beads_verify` blocks table, ask for explicit approval of the WBS/ordering, and
+  do **not** propose or begin implementation in the same breath — generating the
+  gate is not satisfying it. This is the semantic counterpart to `beads_lint`'s
+  automated integrity gate.
+- **Never let a filter pipe hide an interactive prompt.** `bd init`/`bootstrap`
+  can prompt; piping them through `grep`/`sed`/`head` swallows the prompt and
+  looks like a silent hang. Run interactive `bd` commands unpiped; to still drop
+  the 0777 warning, redirect to a file and `grep` the file afterward rather than
+  filtering inline. (The toolkit's own scripts are non-interactive and safe to
+  filter.)
 - Filter beads' 0777 permission warning (emitted on some systems): `... | grep -vE "permissions 0777|chmod 700"`.
 - All CHECK commands prefix `rtk` explicitly (its rewrite hook does not fire under Copilot/Cursor).
 - Never auto-commit/push; the devlog hooks annotate only.
@@ -406,6 +438,30 @@ global `~/.beads`.
   scripts and `env.sh.example` carry none. Generated `agent-hooks.json` is
   git-ignored and regenerated by `install-stop-hook`.
 - After `install-stop-hook`, reload the VS Code window; approve the hook if prompted.
+
+## 10b. Browser-UI projects & CI-as-enforcement
+
+The CHECK contract ("process exit 0 + EXPECT marker in stdout") assumes the
+project offers a *shell-runnable* verifier (`cargo test`, `npm test`). Two cases
+break that assumption — worth knowing before you trust a green gate:
+
+- **No CLI test runner / in-browser suite.** Some apps verify behaviour in the
+  browser against a live build (e.g. a map/UI app whose tests run *inside* the
+  running page), not via a shell command. Driving that from an agent's browser
+  tools works live but **evaporates when the session ends and CI can't replay
+  it** — it is not a durable CHECK. To make it one, commit a small harness
+  (e.g. Node + Playwright) that launches the app headless, runs the in-app suite,
+  and maps DOM pass/fail → exit code + a success-only marker. Only then does
+  `CHECK: rtk node run-suite.js` become durable and CI-runnable. Verification the
+  project can't express as a check, the gate can't enforce — e.g. visual/3D
+  fidelity or a placeholder data URL stays a **manual EVIDENCE gate**.
+- **The runner doesn't fire Stop hooks (VS Code / Copilot).** There the local
+  `gate --close` is *self-run* — compliance, not fail-closed enforcement — and
+  `hook-doctor` only *detects* lapses after the fact. The un-bypassable wall then
+  has to be **CI running the same CHECK commands** on the PR (or a CLI runner
+  that executes Stop hooks). Treat the local gate as a fast pre-flight that
+  *mirrors* CI; if no CI mirrors it, the gates are advisory structure, not a
+  guarantee.
 
 ## 11. Full vs light usage
 

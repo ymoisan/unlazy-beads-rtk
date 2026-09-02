@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Render a mermaid flowchart from a beads manifest (JSON array of bead IDs).
 
+Node labels are two lines: an identity line (gate badge · WBS · bead id) over a
+short, mermaid-safe description derived from the title. Chars that break mermaid
+labels (<, >, &, |, ") are neutralised so the diagram never fails to parse.
+
 Edge styling reads at a glance without a legend (shape + colour + weight):
   - parent-child : thin blue, circle head   (parent --o child)   "kin / owns"
   - blocks       : fat red,  arrow head     (blocker ==> blocked)
@@ -28,12 +32,41 @@ def main():
     ids = json.load(open(sys.argv[1]))
     idset = set(ids)
 
-    titles = {i["id"]: i.get("title", "") for i in bd_json(["list", "--all", "--json"]) if i["id"] in idset}
+    issues = {i["id"]: i for i in bd_json(["list", "--all", "--json"]) if i["id"] in idset}
 
+    def gate_badge(nid):
+        # 🔒 = runnable gate, 👁 = manual (EVIDENCE) gate, none/absent = no badge.
+        for lab in issues.get(nid, {}).get("labels") or []:
+            if lab == "gate:run":
+                return "🔒 "
+            if lab == "gate:manual":
+                return "👁 "
+        return ""
+
+    def wbs_of(nid):
+        for lab in issues.get(nid, {}).get("labels") or []:
+            if lab.startswith("wbs:"):
+                return lab[4:]
+        return ""
+
+    def clean(text):
+        # Drop the [WBS] title prefix and neutralise chars that break mermaid labels.
+        text = re.sub(r"^\[[^\]]*\]\s*", "", text)
+        text = text.replace("->", "→").replace("<-", "←")
+        text = (text.replace('"', "'").replace("<", "(").replace(">", ")")
+                    .replace("&", "+").replace("|", "/"))
+        return re.sub(r"\s+", " ", text).strip()
+
+    def subtitle(text, n=48):
+        return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+    # Two-line node label: identity line (badge · WBS · id) over a short description.
     lines = ["flowchart LR"]
     for nid in ids:
-        label = titles.get(nid, nid).replace('"', "'")
-        lines.append(f'  {sanitize(nid)}["{nid}: {label}"]')
+        title = issues.get(nid, {}).get("title") or nid
+        wbs = wbs_of(nid)
+        ident = f"{gate_badge(nid)}{wbs + ' · ' if wbs else ''}{nid}"
+        lines.append(f'  {sanitize(nid)}["{ident}<br/>{subtitle(clean(title))}"]')
 
     # Kin (parent-child) = thin blue with a circle head (UML-aggregation feel);
     # blocks = fat red arrow. Shape+colour+weight all differ, so no legend needed.

@@ -7,6 +7,7 @@
 #
 # Usage:
 #   beads_gen <plan.json>        # run from inside the target repo (bd needs its .beads)
+#   beads_gen <plan.json> --no-gate   # skip the pre-create structural lint (override)
 #
 # Sidecars written next to plan.json:
 #   <plan>.beads.json   manifest — JSON array of the bead IDs this plan created
@@ -17,15 +18,19 @@ case "${1:-}" in -h|--help) sed -n '2,/^set -/{/^set -/d;s/^# \{0,1\}//p;}' "$0"
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 RENDER="$HERE/render_mermaid.py"
 WBS="$HERE/wbs_prefix.py"
+VERIFY="$HERE/beads_verify"
+LINT="$HERE/beads_lint"
 
 die() { echo "beads_gen: $*" >&2; exit 2; }
 
-[[ $# -ge 1 ]] || die "usage: beads_gen <plan.json> [--no-wbs]"
+[[ $# -ge 1 ]] || die "usage: beads_gen <plan.json> [--no-wbs] [--no-gate]"
 plan="$(readlink -f "$1")"; shift
 wbs=1
+gate=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-wbs) wbs=0 ;;
+    --no-gate) gate=0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
@@ -35,9 +40,19 @@ command -v bd >/dev/null || die "bd not on PATH"
 [[ -f "$RENDER" ]] || die "renderer not found: $RENDER"
 
 # Preflight: require a pinned issue-prefix so beads/gates stay attributable on the shared Dolt server.
-bd config get issue-prefix 2>/dev/null | grep -q '(not set)' &&
+# NB: use the underscore key form — `bd config get issue-prefix` (hyphen) never resolves on newer
+# bd versions and always prints "(not set)"; the canonical DB/config key is `issue_prefix`.
+bd config get issue_prefix 2>/dev/null | grep -q '(not set)' &&
   die "issue-prefix is not pinned for this repo — beads would take a fragile auto-detected prefix.
-     Pin it first:  bd config set issue-prefix <name>   (e.g. $(basename "$(pwd)"))"
+     Pin it first:  bd rename-prefix <name>-   (e.g. $(basename "$(pwd)")-)"
+
+# Hard gate: validate the plan's structural integrity BEFORE creating or deleting any
+# beads, so a malformed graph (cycle, dangler, self-dep, bad schema) never half-materializes.
+# Integrity only — not intent; semantic review stays the chart + blocks table below.
+if [[ $gate -eq 1 && -x "$LINT" ]]; then
+  "$LINT" "$plan" ||
+    die "structural gate failed — fix plan.json, or re-run with --no-gate to override."
+fi
 
 base="${plan%.json}"
 manifest="$base.beads.json"
@@ -74,7 +89,7 @@ python3 -c "import json,sys;json.dump(sys.stdin.read().split(),open('$manifest',
 {
   echo "# Plan graph — $(basename "$base")"
   echo
-  echo "_blue →o (circle) = parent-child · red ⇒ (fat) = blocks. Review before generating gates._"
+  echo "_blue →o (circle) = parent-child · red ⇒ (fat) = blocks · 🔒 runnable gate · 👁 manual gate. Review before generating gates._"
   echo
   echo '```mermaid'
   python3 "$RENDER" "$manifest"
@@ -84,4 +99,12 @@ python3 -c "import json,sys;json.dump(sys.stdin.read().split(),open('$manifest',
 echo "beads_gen: created $(printf '%s\n' "$created" | wc -l) bead(s)"
 echo "  manifest: $manifest"
 echo "  chart:    $chart   (open in Markdown preview to review)"
-echo "  next:     ul_gates_gen $(basename "$plan")   # after you approve the chart"
+
+# Second review gate: emit the blocks table inline so execution order is verifiable
+# without a separate command (parity with the mermaid chart gate above).
+echo
+echo "── blocks review — verify execution order before approving ──"
+"$VERIFY" "$plan" || true
+
+echo
+echo "  next: review the chart + the blocks table above, then  ul_gates_gen $(basename "$plan")"

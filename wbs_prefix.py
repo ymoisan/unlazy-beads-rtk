@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Prefix each GraphPlan node title with a WBS code derived from the parent_key
-tree, and add a matching `wbs:<code>` label. Reads a plan.json path, writes the
-transformed plan to stdout.
+tree, and add a matching `wbs:<code>` label; also convert an optional per-node
+`gate` field ("run"|"manual"|"none") into a `gate:<kind>` label, consumed so bd
+never sees the field. Reads a plan.json path, writes the transformed plan to
+stdout.
 
 Codes use the node's type-initial + sibling index, dotted by depth:
   epic  -> E1
@@ -42,15 +44,21 @@ def main():
 
     for n in nodes:
         code = n.pop("_wbs", None)
-        if not code:
-            continue
-        title = n.get("title", "")
-        if not title.startswith(f"[{code}]"):
-            n["title"] = f"[{code}] {title}"
+        if code:
+            title = n.get("title", "")
+            if not title.startswith(f"[{code}]"):
+                n["title"] = f"[{code}] {title}"
         labels = n.get("labels", [])
-        wl = f"wbs:{code}"
-        if wl not in labels:
-            labels = labels + [wl]
+        if code:
+            wl = f"wbs:{code}"
+            if wl not in labels:
+                labels = labels + [wl]
+        # gate intent -> gate:<kind> label; consume the field so bd never sees it.
+        gate = n.pop("gate", None)
+        if gate in ("run", "manual"):
+            gl = f"gate:{gate}"
+            if gl not in labels:
+                labels = labels + [gl]
         n["labels"] = labels
 
     json.dump(plan, sys.stdout)

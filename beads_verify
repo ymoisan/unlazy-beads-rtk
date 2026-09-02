@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""beads_verify <plan.json> — print the WBS-sorted blocks table for a plan's beads.
+
+Companion to beads_gen: reads the sidecar manifest (<plan>.beads.json) to scope to
+exactly the beads this plan created, queries bd for their live dependencies, and
+prints each bead's blocks-edges (the ones that determine execution order) sorted
+by WBS code. Parent-child edges are intentionally omitted — this table is about
+"what must finish before this can start".
+
+A bead is flagged READY when it is still open and every one of its blocks-parents
+is closed. bd ready remains the authoritative scheduler (it also honours
+parent-child); this is a human-readable audit of the blocks wiring.
+
+Usage:
+  beads_verify <plan.json>
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+def die(msg):
+    print(f"beads_verify: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def bd_json(args):
+    out = subprocess.run(["bd", *args], capture_output=True, text=True)
+    txt = out.stdout.strip()
+    # bd may prepend a permissions warning line on some filesystems; find the JSON.
+    start = txt.find("[")
+    return json.loads(txt[start:]) if start != -1 else []
+
+
+def wbs(issue):
+    for label in issue.get("labels") or []:
+        if label.startswith("wbs:"):
+            return label[4:]
+    return "?"
+
+
+def gate(issue):
+    for label in issue.get("labels") or []:
+        if label.startswith("gate:"):
+            return label[5:]
+    return "—"
+
+
+def blocks_parents(issue):
+    # dependency {type: "blocks"} means this issue depends on depends_on_id (it must finish first).
+    return [d["depends_on_id"] for d in (issue.get("dependencies") or []) if d.get("type") == "blocks"]
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0 if argv else 2)
+
+    plan = Path(argv[0]).resolve()
+    if not plan.is_file():
+        die(f"plan not found: {plan}")
+    manifest = plan.with_suffix(".beads.json") if plan.suffix == ".json" else Path(str(plan) + ".beads.json")
+    if not manifest.is_file():
+        die(f"manifest not found: {manifest} — run beads_gen first")
+
+    ids = set(json.loads(manifest.read_text()))
+    if not ids:
+        die(f"manifest is empty: {manifest}")
+
+    issues = {i["id"]: i for i in bd_json(["list", "--all", "--json"]) if i["id"] in ids}
+    missing = ids - set(issues)
+    if missing:
+        die(f"{len(missing)} manifest bead(s) not found in bd (stale manifest?): {', '.join(sorted(missing))}")
+
+    def is_closed(issue):
+        return str(issue.get("status", "")).lower() in ("closed", "done")
+
+    rows = sorted(issues.values(), key=lambda i: wbs(i))
+    w_wbs = max((len(wbs(i)) for i in rows), default=3)
+
+    print(f"Plan: {plan.name}   ({len(rows)} beads)")
+    print(f"{'WBS':<{w_wbs}}  {'ID':<8}  {'STATUS':<8}  {'GATE':<6}  BLOCKED-BY (must finish first)")
+    print("-" * (w_wbs + 68))
+
+    ready = []
+    anomalies = []
+    for i in rows:
+        parents = blocks_parents(i)
+        # Flag blocks-parents that fall outside this plan (cross-plan / dangling).
+        ext = [p for p in parents if p not in issues]
+        if ext:
+            anomalies.append(f"{wbs(i)} ({i['id']}) blocked-by out-of-plan bead(s): {', '.join(ext)}")
+        parent_str = ", ".join(sorted(f"{wbs(issues[p])}({p})" for p in parents if p in issues)) or "—"
+        open_blockers = [p for p in parents if p in issues and not is_closed(issues[p])]
+        flag = ""
+        if not is_closed(i) and not open_blockers:
+            flag = "  ← READY"
+            ready.append(wbs(i))
+        status = str(i.get("status", "?")).lower()
+        print(f"{wbs(i):<{w_wbs}}  {i['id']:<8}  {status:<8}  {gate(i):<6}  {parent_str}{flag}")
+
+    print("-" * (w_wbs + 68))
+    print(f"Ready now (blocks satisfied, still open): {', '.join(ready) if ready else 'none'}")
+    if anomalies:
+        print("\nAnomalies:")
+        for a in anomalies:
+            print(f"  ! {a}")
+    print("\nNote: `bd ready` is authoritative (also honours parent-child); this audits blocks-edges only.")
+
+
+if __name__ == "__main__":
+    main()
