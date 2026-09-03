@@ -43,5 +43,14 @@ printf '%s\tdoctor\t%s\n' "$now" "$verdict" >> "$log"
 stale="$("$UNLAZY_HOME/.agents/unlazy-beads-rtk/stale-beads" "$PWD" 2>/dev/null || true)"
 [[ -n "$stale" ]] && { echo "stale in-progress beads (> ${UNLAZY_STALE_HOURS:-2}h) — close or un-claim:"; echo "$stale"; }
 
+# handoff detector (detect-only): closed masters whose unblocked dependents never
+# got their handoff note (a raw `bd close` bypassed gate --close). Reports; the
+# fix is `handoff_note.py --reconcile`.
+handoff="${UNLAZY_HANDOFF:-$UNLAZY_HOME/.agents/unlazy-beads-rtk/handoff_note.py}"
+if [[ -d "$PWD/.beads" && -f "$handoff" ]]; then
+  ho="$(HANDOFF_DRY_RUN=1 python3 "$handoff" --reconcile 2>&1 || true)"
+  [[ -n "$ho" ]] && { echo "handoff notes need attention (fix: handoff_note.py --reconcile):"; echo "$ho"; }
+fi
+
 # advance the session-start marker LAST, so this run compared against the prior one
 printf '%s\tsid=%s\n' "$now" "${1:-session}" > "$ss"

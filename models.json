@@ -7,6 +7,7 @@
       "model": "Claude Haiku 4.5",
       "vendor": "copilot",
       "enabled": true,
+      "reason": "mechanical, run-gated bulk",
       "desc": "Cheap, fast model for mechanical, run-gated work (scaffolding, boilerplate, config wiring, deps). Safe to delegate precisely because a run gate catches its mistakes."
     },
     {
@@ -15,6 +16,7 @@
       "model": "Claude Sonnet 4.5",
       "vendor": "copilot",
       "enabled": false,
+      "reason": "substantial non-architectural coding",
       "desc": "Mid-tier model for substantial but non-architectural run-gated coding. Enable this entry to introduce a third tier between worker and lead."
     }
   ]

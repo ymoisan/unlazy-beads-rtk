@@ -133,7 +133,9 @@ cp ~/.agents/unlazy-beads-rtk/GATES.template.md GATES.md
 ```
 
 See [WALKTHROUGH.md](WALKTHROUGH.md) for the full model, the trace/verdict
-mechanics, and the full-vs-light usage details (§11).
+mechanics, and the full-vs-light usage details (§11). For how beads works as an
+*intentional*, off-VCS **blackboard** for agent coordination — including the
+handoff note that `gate --close` delivers to newly-unblocked dependents — see §12.
 
 ## License
 

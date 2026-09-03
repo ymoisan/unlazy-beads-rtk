@@ -11,7 +11,12 @@
 #   gate <bead-id> --approve  approve+run pending checks (first run of new checks)
 #   gate <bead-id> --lint     lint the ledger for un-failable oracles
 #   gate <bead-id> --new      scaffold a ledger from the template
-#   gate <bead-id> --close    reverify, then `bd close <bead-id>` iff all gates pass
+#   gate <bead-id> --close [--note "how it was built"]
+#                             reverify, then `bd close <bead-id>` iff all gates
+#                             pass; append the handoff note to each open bead
+#                             this one was blocking (WALKTHROUGH §12). The note
+#                             is REQUIRED when the bead unblocks others (refuses
+#                             without it); omit it when there are no dependents.
 #
 # Conventions (see ~/.agents/unlazy-beads-rtk/beads_unlazy_plan.md):
 #   - Route CHECK commands through rtk (rtk cargo test, rtk npm ...). rtk's
@@ -25,6 +30,7 @@ SKILL_DIR="${UNLAZY_SKILL_DIR:-$HOME/.agents/skills/unlazy}"
 CHECKER="$SKILL_DIR/scripts/gate_check.py"
 LINTER="$SKILL_DIR/scripts/gate_lint.py"
 TEMPLATE="${GATES_TEMPLATE:-$HOME/.agents/unlazy-beads-rtk/GATES.template.md}"
+HANDOFF="${UNLAZY_HANDOFF:-$HOME/.agents/unlazy-beads-rtk/handoff_note.py}"
 
 die() { echo "gate: $*" >&2; exit 2; }
 
@@ -60,8 +66,25 @@ case "$action" in
     ;;
   --close)
     [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
+    handoff_note=""
+    [[ "${2:-}" == "--note" ]] && handoff_note="${3:-}"
     if python3 "$CHECKER" --reverify --root "$repo_root" "$ledger"; then
-      bd close "$bead"
+      # if this bead unblocks others, a handoff note is mandatory — refuse before close
+      deps=""
+      [[ -f "$HANDOFF" ]] && deps="$(python3 "$HANDOFF" --deps "$bead" 2>/dev/null || true)"
+      if [[ -n "$deps" && -z "$handoff_note" ]]; then
+        echo "HANDOFF NOTE REQUIRED: $bead unblocks $(echo "$deps" | tr '\n' ' ')— re-run: gate $bead --close --note \"how it was built\"" >&2
+        exit 1
+      fi
+      # store the note on the master itself (source of truth / audit)
+      if [[ -n "$handoff_note" ]]; then
+        bd close "$bead" --reason "$handoff_note"
+      else
+        bd close "$bead"
+      fi
+      # mirror the note onto each open blocking-dependent (passive delivery);
+      # additive, best-effort: never fails the close
+      [[ -n "$deps" && -f "$HANDOFF" ]] && python3 "$HANDOFF" "$bead" "$handoff_note" || true
     else
       echo "HANDOFF REQUIRED: gates unmet for $bead — bead left open" >&2
       exit 1

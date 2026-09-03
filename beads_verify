@@ -15,6 +15,7 @@ Usage:
   beads_verify <plan.json>
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,60 @@ def model(issue):
     return "lead"
 
 
+def _load_tiers():
+    # full tier list from models.json (symlink-safe); [] if absent/broken.
+    p = Path(os.path.realpath(__file__)).parent / "models.json"
+    if not p.is_file():
+        return []
+    try:
+        return json.loads(p.read_text()).get("tiers", [])
+    except json.JSONDecodeError:
+        return []
+
+
+_TIERS = _load_tiers()
+_TIER_BY_NAME = {t.get("name"): t for t in _TIERS if t.get("name")}
+_LEAD_REASON = "controller: judgment, one-liners, manual gates"
+
+
+def model_letter(issue):
+    name = model(issue)
+    if name in ("lead", "none", ""):
+        return "l"
+    t = _TIER_BY_NAME.get(name)
+    return (t.get("tag") or name[:1]) if t else name[:1]
+
+
+def _tier_reason(name):
+    if name in (None, "", "lead", "none"):
+        return _LEAD_REASON
+    t = _TIER_BY_NAME.get(name)
+    return (t.get("reason") or t.get("desc") or name) if t else name
+
+
+def _wbs_codes(nodes):
+    # Recompute the WBS code per node key, mirroring wbs_prefix (type-initial + index).
+    by_key = {n.get("key"): n for n in nodes}
+    children, roots = {}, []
+    for n in nodes:
+        p = n.get("parent_key")
+        if p and p in by_key:
+            children.setdefault(p, []).append(n)
+        else:
+            roots.append(n)
+    codes = {}
+
+    def walk(lst, parent):
+        for i, n in enumerate(lst, 1):
+            letter = (n.get("type") or "task")[0].upper()
+            code = f"{letter}{i}" if not parent else f"{parent}.{letter}{i}"
+            codes[n.get("key")] = code
+            walk(children.get(n.get("key"), []), code)
+
+    walk(roots, "")
+    return codes
+
+
 def blocks_parents(issue):
     # dependency {type: "blocks"} means this issue depends on depends_on_id (it must finish first).
     return [d["depends_on_id"] for d in (issue.get("dependencies") or []) if d.get("type") == "blocks"]
@@ -85,12 +140,28 @@ def main():
     def is_closed(issue):
         return str(issue.get("status", "")).lower() in ("closed", "done")
 
-    rows = sorted(issues.values(), key=lambda i: wbs(i))
-    w_wbs = max((len(wbs(i)) for i in rows), default=3)
+    # WHY column: read the plan's per-node `why` (prose, never stored in bd),
+    # mapped to beads by recomputed WBS; fall back to the tier's default reason.
+    plan_nodes = json.loads(plan.read_text()).get("nodes", [])
+    codes = _wbs_codes(plan_nodes)
+    why_by_wbs = {}
+    for n in plan_nodes:
+        c = codes.get(n.get("key"))
+        if c:
+            why_by_wbs[c] = n.get("why") or _tier_reason(n.get("model"))
 
+    def trunc(s, n):
+        return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+    rows = sorted(issues.values(), key=lambda i: wbs(i))
+    w_wbs = max([len("WBS")] + [len(wbs(i)) for i in rows])
+    w_why = min(40, max([len("WHY")] + [len(why_by_wbs.get(wbs(i), "—")) for i in rows]))
+
+    header = (f"{'WBS':<{w_wbs}}  {'ID':<8}  {'STATUS':<8}  {'GATE':<6}  "
+              f"{'M':<1}  {'WHY':<{w_why}}  BLOCKED-BY (must finish first)")
     print(f"Plan: {plan.name}   ({len(rows)} beads)")
-    print(f"{'WBS':<{w_wbs}}  {'ID':<8}  {'STATUS':<8}  {'GATE':<6}  {'MODEL':<6}  BLOCKED-BY (must finish first)")
-    print("-" * (w_wbs + 76))
+    print(header)
+    print("-" * len(header))
 
     ready = []
     anomalies = []
@@ -107,9 +178,20 @@ def main():
             flag = "  ← READY"
             ready.append(wbs(i))
         status = str(i.get("status", "?")).lower()
-        print(f"{wbs(i):<{w_wbs}}  {i['id']:<8}  {status:<8}  {gate(i):<6}  {model(i):<6}  {parent_str}{flag}")
+        why = trunc(why_by_wbs.get(wbs(i), "—"), w_why)
+        print(f"{wbs(i):<{w_wbs}}  {i['id']:<8}  {status:<8}  {gate(i):<6}  "
+              f"{model_letter(i):<1}  {why:<{w_why}}  {parent_str}{flag}")
 
-    print("-" * (w_wbs + 76))
+    print("-" * len(header))
+    # Embedded legend: the single-letter M column + the WHY source.
+    print("MODEL tiers (single-letter M column):")
+    print(f"  l  lead   — {_LEAD_REASON}")
+    for t in _TIERS:
+        tag = t.get("tag") or (t.get("name") or "?")[:1]
+        state = "" if t.get("enabled") else " (disabled)"
+        print(f"  {tag}  {t.get('name', ''):<6} — {t.get('reason') or t.get('desc', '')}{state}")
+    print("WHY = per-bead justification (plan `why`, else the tier default).")
+    print()
     print(f"Ready now (blocks satisfied, still open): {', '.join(ready) if ready else 'none'}")
     if anomalies:
         print("\nAnomalies:")

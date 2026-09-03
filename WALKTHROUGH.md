@@ -53,16 +53,17 @@ plan.json ──beads_gen──▶ beads graph (Dolt)  +  plan.graph.md (mermaid
 |------|---------|
 | `beads_gen <plan.json>` | Create the beads graph from a plan; render `plan.graph.md`; write `plan.beads.json` manifest. **Pre-create hard gate: runs `beads_lint` first and refuses to create/delete anything on a malformed graph (`--no-gate` overrides).** **Emits two review gates on every run: the mermaid chart + an inline `beads_verify` blocks table.** These two outputs are a **human stop point**, not a status print — present them and get explicit WBS/ordering sign-off before proposing or starting any implementation (see §10). Re-runnable (overwrites prior beads via manifest). Preflight refuses to run unless `issue-prefix` is pinned. |
 | `beads_lint <plan.json>` | **Structural integrity gate** (pure plan.json analysis, no bd): flags cycles (deadlock), danglers, self-deps, bad parent_key, string priorities, unstartable graphs; warns on redundant/lineage-crossing edges. Also validates the optional `gate` field (errors on an invalid value; warns on an ungated leaf or a gated container/epic) and the optional `model` tier (errors on an unknown/disabled tier; warns when a manual gate is delegated off-lead or a delegated task has no run gate). Exit 3 on error, 0 clean. Auto-invoked by `beads_gen` before creation; also standalone. Checks **integrity, not intent**. |
-| `beads_verify <plan.json>` | Print the WBS-sorted **blocks** table for the plan's beads (scoped via the manifest): each bead's blocked-by set, a `GATE` column (`run`/`manual`/`—`), a `MODEL` column (delegated tier, `lead` when absent), `← READY` flags, and cross-plan anomalies. Auto-invoked by `beads_gen`; also runnable standalone. `bd ready` stays authoritative. |
+| `beads_verify <plan.json>` | Print the WBS-sorted **blocks** table for the plan's beads (scoped via the manifest): each bead's blocked-by set, a `GATE` column (`run`/`manual`/`—`), a single-letter `M` tier column (`w`/`m`/`l`), a `WHY` column (per-bead justification from the plan's `why`, else the tier default), `← READY` flags, and cross-plan anomalies — followed by an embedded tier legend. Auto-invoked by `beads_gen`; also runnable standalone. `bd ready` stays authoritative. |
 | `ul_gates_gen <plan.json>` | Scaffold a gate ledger for each **leaf** (node with no children), detected via parent-child edges. |
-| `gate <id> [verb]` | Gate lifecycle: `--new`, `--lint`, `--approve`, reverify (default), `--close`. |
+| `gate <id> [verb]` | Gate lifecycle: `--new`, `--lint`, `--approve`, reverify (default), `--close [--note "how it was built"]`. On a passing `--close`, stores the note on the master as `bd close --reason` and mirrors it onto each open bead this one was blocking (via `handoff_note.py`); the note is **required when the bead unblocks others** (refuses before closing without it). |
+| `handoff_note.py <closed-id> <note>` / `--deps <id>` / `--reconcile [<id>...]` | Helper invoked by `gate --close`. Write mode appends the closing agent's handoff note to the open **blocking-dependents**, so the successor reads *how* its dependency was built in `bd show` (§12); `--deps` lists those dependents (gate's pre-close "note required?" check); `--reconcile` delivers handoffs a raw `bd close` skipped (mirrors a closed master's `close_reason` to open dependents that lack it; no id scans all closed beads; exit 1 + flags any master closed with only a generic reason). Additive — never fails a close; `HANDOFF_DRY_RUN=1` prints without writing. |
 | `render_mermaid.py <manifest>` | Render the review chart (helper) — edge colours + gate badges (🔒/👁) + model-tier tags (`[w]`/`[m]`; none = lead). |
 | `wbs_prefix.py <plan.json>` | Add `[E1.T1.T1]` WBS codes to titles + `wbs:` labels, `gate:` labels from each node's `gate` field, and `model:` labels from each node's `model` field (helper, used by beads_gen). |
 | `devlog_update --trailer` / `--commit <sha>` | Devlog trace: trailer summary (read-only) / append DEVLOG.md entry + advance watermark. |
 | `install-devlog-hooks [repo]` | Chain-safe symlink of prepare-commit-msg + post-commit hooks. |
 | `hooks/stop-gate` | VS Code **Stop** hook (fires at session end): gate-enforce (blocks a clean stop, `exit 2`), staleness warn, heartbeat. Not called directly. |
 | `install-stop-hook` [`--disarm`] | Arm/disarm the Stop hook (default **ON**): write `agent-hooks.json`, register it in VS Code user settings, record the durable "armed" trace. |
-| `hook-doctor` | Report Stop-hook health (OK / UNCONFIRMED / INACTIVE / NOT-ARMED) + stale beads. Run at session start. |
+| `hook-doctor` | Report Stop-hook health (OK / UNCONFIRMED / INACTIVE / NOT-ARMED) + stale beads + undelivered handoff notes (detect-only `handoff_note.py --reconcile` scan). Run at session start. |
 | `ul_allowlist_check` [`--print`] | Preflight VS Code's `chat.tools.terminal.autoApprove` before an autonomous run: verifies the curated allows (`rtk`, `bd`, …) and the mandatory `git push` **deny** are present. Exit 1 on a critical gap (stop and ask the user); `--print` emits the recommended JSON block to paste. |
 | `stale-beads [path]` / `--install-view` | List in-progress beads older than `UNLAZY_STALE_HOURS` (default 2h); `--install-view` adds a live `stale_beads` view to the repo's Dolt DB. |
 
@@ -106,9 +107,13 @@ themselves carry no personal path — only `$UNLAZY_HOME`.
   [`models.json`](../models.json) (e.g. `"worker"`, `"mid"`), or `"lead"`/`"none"`/
   absent for the controller itself. `beads_gen` consumes it and stamps a
   `model:<tier>` label, surfaced as a chart tag (`[w]`/`[m]`; none = lead) and a
-  `MODEL` column in the blocks table. `beads_lint` errors on an unknown/disabled
-  tier and warns on unsafe delegation (manual gate off-lead, or a delegated task
-  with no run gate). See §4a.
+  single-letter `M` column (`w`/`m`/`l`) in the blocks table. `beads_lint` errors
+  on an unknown/disabled tier and warns on unsafe delegation (manual gate
+  off-lead, or a delegated task with no run gate). See §4a.
+- Optional **`why`** per node is a short, review-only justification for the tier
+  choice. `wbs_prefix` consumes it (bd never sees it — prose isn't a tag); the
+  original plan is read by `beads_verify` to fill the `WHY` column. If omitted,
+  the column falls back to the tier's default reason (`reason` in `models.json`).
 
 ## 4a. Model tiers & delegation
 
@@ -119,8 +124,8 @@ manual gates stay with the lead. Tiers live in
 ```json
 {
   "tiers": [
-    {"tag": "w", "name": "worker", "model": "Claude Haiku 4.5", "vendor": "copilot", "enabled": true,  "desc": "…"},
-    {"tag": "m", "name": "mid",    "model": "Claude Sonnet 4.5", "vendor": "copilot", "enabled": false, "desc": "…"}
+    {"tag": "w", "name": "worker", "model": "Claude Haiku 4.5", "vendor": "copilot", "enabled": true,  "reason": "mechanical, run-gated bulk", "desc": "…"},
+    {"tag": "m", "name": "mid",    "model": "Claude Sonnet 4.5", "vendor": "copilot", "enabled": false, "reason": "substantial non-architectural coding", "desc": "…"}
   ]
 }
 ```
@@ -473,6 +478,9 @@ bd list                                     # confirm the graph is visible again
 ## 10. Conventions
 
 - Run `bd` only in the integrated terminal (never MCP).
+- **On claim, `bd show <id>` before working** — it renders the bead's `NOTES`,
+  where a closed dependency left its handoff note (§12). `bd ready` alone does
+  not show notes.
 - **After `beads_gen`, stop at the review gate.** Show the mermaid chart + the
   `beads_verify` blocks table, ask for explicit approval of the WBS/ordering, and
   do **not** propose or begin implementation in the same breath — generating the
@@ -553,3 +561,79 @@ periodically.
 The gate layer is **additive and per-repo** — you can drop a `GATES.md` into a
 project later, the day a task grows big enough to want fail-closed checks,
 without changing anything you have already done.
+
+## 12. The blackboard framing (and a proposed handoff note)
+
+Thoughtworks' [*An Accidental Blackboard*](https://martinfowler.com/articles/exploring-gen-ai/an-accidental-blackboard.html)
+(Edwards-Alexander, Sep 2026) describes ten agents in a monorepo that
+*accidentally* began coordinating through plans linked to numbered spec sections
+— re-deriving the **blackboard / tuple-space** pattern (Hearsay-II, 1980;
+Gelernter, 1986): a schema-light shared memory where autonomous agents drop
+labelled partial solutions and other agents pick them up. The piece lands on two
+conclusions — you want that channel **intentional**, not emergent, and **sitting
+independently of source control** (they drove it with a frequent push cycle,
+which overloaded CI; backing off starved the signal).
+
+This toolkit already implements the intentional version:
+
+| Blackboard concept | Mechanism here |
+|--------------------|----------------|
+| Shared tuple space | **beads** = Dolt-backed shared issue store |
+| "Minimum structure + any extra fields, no schema" | bead = `id` + `status` + `blocked-by`, plus arbitrary labels (`gate:run`, `model:worker`) and the plan's free-text `why` |
+| Plans linked to numbered spec sections | `plan.json` → **WBS** (`E1.T2`, …) |
+| Integration points / "wait for the verifier to land" | **`blocked-by`** edges (a first-class constraint, not a convention) |
+| "Mark in-progress so no one else takes it" | **`bd update --claim`** (atomic tuple-take) |
+| "Drop a labelled solution, other searchers pick it up" | **gates + model tiers** — a worker picks up *ready ∧ run-gated ∧ `[w]`* beads (§4a) |
+| Opportunistic control / scheduler | **`bd ready`**; delegate-by-gate is the policy for *which tier* takes *which* bead |
+
+Crucially, the channel is **off-VCS by construction**: `.beads/` is git-ignored
+and Dolt sync rides `refs/dolt/data`, separate from `refs/heads/*` (§9, §8). So
+coordination flows over the Dolt channel, **not over commits** — sidestepping the
+CI-overload trap that forced the article's team to back off. This is the same
+separation the never-push / two-mode-commit policy enforces: git carries code,
+beads carries coordination ([docs/POLICY.md](POLICY.md)).
+
+**Handoff notes on unblock.** The article's team observed one more behaviour:
+when an agent finished a line, the dependent agent received, *at the moment it
+unblocked*, notes on **how** that line was implemented. Beads already
+auto-unblocks dependents (their `blocked-by` clears on close); this toolkit adds
+the delivered-note half. On a passing close:
+
+```
+gate <id> --close --note "how it was built"
+```
+
+The note is authored by the **closing agent** (what it built, gotchas) — not the
+human; it's the finishing agent leaving a breadcrumb for its successor, the same
+spirit as the gate forcing evidence. `handoff_note.py` (invoked by `gate --close`
+after `bd close` succeeds) reads the closed bead's `dependents`
+(`bd show --json --include-dependents`), keeps the open ones joined by a `blocks`
+edge, and appends the note to each via `bd note` — so it lands on the **dependent**
+bead, and the successor agent reads "↩ handoff: dependency `<id>` closed. `<how>`"
+in `bd show <its-own-bead>` when it claims (see §10). The same text is also stored
+on the **closed bead itself** as its `bd close --reason` (the single authored
+source / audit trail); the dependent copy is the passive-delivery mirror. A bead
+with several blockers accumulates one handoff line per blocker as each closes, so
+by the time it is actually ready (all blockers closed) every predecessor's note
+is already in its context; the `blocks`-vs-`parent-child` filter keeps the parent
+epic from being treated as a blocker. The note is **required whenever the bead
+unblocks others**: `gate --close` runs `handoff_note.py --deps` first and refuses
+(before closing) if a dependent exists and no `--note` was given — no dependents,
+no note needed. Enforcement lives in `gate --close`: `bd` exposes no
+close-lifecycle hook (its `hooks` are git hooks), so a bead closed via raw
+`bd close` bypasses this — the same trust boundary as every other gate. It is
+deliberately **additive and fail-safe**: it runs only after the close, mutates
+only dependents' notes, and never fails the close (soft-warns on any `bd` error).
+`HANDOFF_DRY_RUN=1` prints targets without writing. This makes the article's
+*directly delivered notes* an intentional part of the pipeline.
+
+**Detector / repair for bypassed closes.** Because enforcement lives in
+`gate --close`, a master closed via raw `bd close` skips the mirror. `handoff_note.py
+--reconcile [<id>...]` catches that after the fact: for each closed master with
+open blocking-dependents, it mirrors the master's `close_reason` to any dependent
+that lacks the note (idempotent — it checks for the `↩ handoff: dependency <id>`
+marker first). With no id it scans every closed bead. It **cannot fabricate** a
+missing "how": a master closed with no real reason (bd's generic auto-`Closed`
+counts as none) is **flagged, not repaired**, and the scan exits 1. `hook-doctor`
+runs this scan detect-only (`HANDOFF_DRY_RUN=1`) at session start and surfaces
+anything outstanding with the fix command.
