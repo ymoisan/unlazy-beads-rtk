@@ -47,6 +47,14 @@ def gate(issue):
     return "—"
 
 
+def model(issue):
+    # model:<tier> label -> tier name; absent means the lead (controller) runs it.
+    for label in issue.get("labels") or []:
+        if label.startswith("model:"):
+            return label[6:]
+    return "lead"
+
+
 def blocks_parents(issue):
     # dependency {type: "blocks"} means this issue depends on depends_on_id (it must finish first).
     return [d["depends_on_id"] for d in (issue.get("dependencies") or []) if d.get("type") == "blocks"]
@@ -81,8 +89,8 @@ def main():
     w_wbs = max((len(wbs(i)) for i in rows), default=3)
 
     print(f"Plan: {plan.name}   ({len(rows)} beads)")
-    print(f"{'WBS':<{w_wbs}}  {'ID':<8}  {'STATUS':<8}  {'GATE':<6}  BLOCKED-BY (must finish first)")
-    print("-" * (w_wbs + 68))
+    print(f"{'WBS':<{w_wbs}}  {'ID':<8}  {'STATUS':<8}  {'GATE':<6}  {'MODEL':<6}  BLOCKED-BY (must finish first)")
+    print("-" * (w_wbs + 76))
 
     ready = []
     anomalies = []
@@ -99,9 +107,9 @@ def main():
             flag = "  ← READY"
             ready.append(wbs(i))
         status = str(i.get("status", "?")).lower()
-        print(f"{wbs(i):<{w_wbs}}  {i['id']:<8}  {status:<8}  {gate(i):<6}  {parent_str}{flag}")
+        print(f"{wbs(i):<{w_wbs}}  {i['id']:<8}  {status:<8}  {gate(i):<6}  {model(i):<6}  {parent_str}{flag}")
 
-    print("-" * (w_wbs + 68))
+    print("-" * (w_wbs + 76))
     print(f"Ready now (blocks satisfied, still open): {', '.join(ready) if ready else 'none'}")
     if anomalies:
         print("\nAnomalies:")

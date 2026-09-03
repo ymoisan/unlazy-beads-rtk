@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""ul_allowlist_check — preflight the VS Code Copilot terminal auto-approve list.
+
+Before an autonomous run (subagent fan-out, or a long bead-execution loop) the
+lead should confirm the workflow's routine commands are auto-approved, so the
+loop is not stalled waiting on a human to click "Allow" for every `rtk`, `bd`,
+or `git status`. This script inspects VS Code's `chat.tools.terminal.autoApprove`
+map and reports whether the curated allow/deny entries are present.
+
+It is deliberately conservative:
+  - CRITICAL allows (rtk, bd) and the mandatory `git push` DENY must be present,
+    else exit 1 (the run should stop and ask the user to fix the allowlist).
+  - Any other recommended entry that is missing is reported as INFO, not a
+    failure — the user may have trimmed the list on purpose.
+
+Usage:
+  ul_allowlist_check                 # audit; exit 0 = ok, 1 = critical gap, 2 = usage/no-settings
+  ul_allowlist_check --print         # print the recommended JSON block to paste
+  ul_allowlist_check --settings PATH # audit a specific settings.json
+
+Settings.json is located (first hit wins):
+  $UL_VSCODE_SETTINGS, then common VS Code / WSL-remote / Codium locations.
+"""
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+AUTO_KEY = "chat.tools.terminal.autoApprove"
+
+# ---- curated allow/deny recommendation (single source for --print + audit) ----
+# true  = auto-approve;  false / {"approve": false} = always require confirmation.
+# Regex keys are wrapped in /.../ ; matchCommandLine lets a regex see the whole line.
+RECOMMENDED = {
+    # workflow essentials
+    "rtk": True,
+    "bd": True,
+    "dolt": True,
+    # safe git (read + local write). push stays denied below.
+    "git status": True, "git add": True, "git commit": True, "git diff": True,
+    "git log": True, "git show": True, "git branch": True, "git switch": True,
+    "git checkout": True, "git restore": True, "git fetch": True, "git stash": True,
+    "git rm": True, "git clean": True, "git config": True, "git remote": True,
+    # build / test / lint toolchains
+    "python3": True, "node": True, "npm": True, "npx": True, "rush": True,
+    "rushx": True, "cargo": True, "tsc": True, "eslint": True, "prettier": True,
+    # routine read / file ops (git-tracked tree, reversible)
+    "ls": True, "cat": True, "grep": True, "sed": True, "awk": True, "head": True,
+    "tail": True, "wc": True, "find": True, "echo": True, "printf": True, "pwd": True,
+    "stat": True, "ln": True, "mkdir": True, "cp": True, "mv": True, "comm": True,
+    "sort": True, "cut": True, "tr": True, "jq": True, "diff": True,
+    # allow force-deleting a *specific* file (non-recursive)
+    "rm -f": True,
+    # allow recursive rm in general...
+    "/^rm\\s+-[a-zA-Z]*r/": {"approve": True, "matchCommandLine": True},
+    # ...but VETO (require confirm) the dangerous ones — deny wins over allow:
+    #   push (human pushes only), hard reset, and rm -r touching /, ~, .git, .beads, or a bare *
+    "/\\bgit\\s+push\\b/": {"approve": False, "matchCommandLine": True},
+    "/\\bgit\\s+reset\\s+--hard\\b/": {"approve": False, "matchCommandLine": True},
+    "/\\brm\\s+-[a-zA-Z]*r[a-zA-Z]*\\s+([^\\n]*\\s)?([\"']?(/|~)|[^\\n]*\\.(git|beads)\\b|[^\\n]*\\*)/":
+        {"approve": False, "matchCommandLine": True},
+}
+
+# Entries whose absence makes an autonomous run unsafe / stall-prone.
+CRITICAL_ALLOW = ["rtk", "bd"]
+
+
+def _candidates():
+    env = os.environ.get("UL_VSCODE_SETTINGS")
+    if env:
+        yield Path(env)
+    home = Path.home()
+    yield home / ".vscode-server/data/User/settings.json"        # WSL / remote
+    yield home / ".config/Code/User/settings.json"               # Linux native
+    yield home / ".config/VSCodium/User/settings.json"           # VSCodium
+    yield home / "Library/Application Support/Code/User/settings.json"  # macOS
+    yield home / "AppData/Roaming/Code/User/settings.json"       # Windows
+
+
+def _find_settings():
+    for p in _candidates():
+        if p and p.is_file():
+            return p
+    return None
+
+
+def _strip_jsonc(text):
+    # settings.json is JSONC: drop // and /* */ comments and trailing commas.
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    text = re.sub(r"(^|[^:])//[^\n]*", lambda m: m.group(1), text)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    return text
+
+
+def _approves(val):
+    # normalise a map value to True(allow)/False(deny)/None(unknown shape).
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, dict) and "approve" in val:
+        return bool(val["approve"])
+    return None
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0)
+    if argv and argv[0] == "--print":
+        print(json.dumps({AUTO_KEY: RECOMMENDED}, indent=2))
+        sys.exit(0)
+
+    settings = None
+    if len(argv) >= 2 and argv[0] == "--settings":
+        settings = Path(argv[1])
+        if not settings.is_file():
+            print(f"ul_allowlist_check: settings not found: {settings}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        settings = _find_settings()
+        if settings is None:
+            print("ul_allowlist_check: no VS Code settings.json found "
+                  "(set $UL_VSCODE_SETTINGS or pass --settings PATH).", file=sys.stderr)
+            print("  run  ul_allowlist_check --print  to see the recommended block.")
+            sys.exit(2)
+
+    try:
+        data = json.loads(_strip_jsonc(settings.read_text()))
+    except json.JSONDecodeError as e:
+        print(f"ul_allowlist_check: could not parse {settings}: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    amap = data.get(AUTO_KEY) or {}
+    print(f"ul_allowlist_check: {settings}")
+    print(f"  {AUTO_KEY}: {len(amap)} entr{'y' if len(amap) == 1 else 'ies'}")
+
+    # Critical allows present and truthy?
+    gaps = []
+    for k in CRITICAL_ALLOW:
+        if _approves(amap.get(k)) is not True:
+            gaps.append(f"missing/!=allow: {k!r} (needed so the loop is not stalled on every '{k}')")
+
+    # Mandatory push-deny present? (any key that mentions git push and denies)
+    push_denied = any(
+        re.search(r"git.*push", k) and _approves(v) is False
+        for k, v in amap.items()
+    )
+    if not push_denied:
+        gaps.append("no deny rule for 'git push' — the lead must never push silently; add the deny entry")
+
+    # Informational: other recommended entries not present.
+    info = [k for k in RECOMMENDED if k not in amap]
+
+    if info:
+        print(f"  info: {len(info)} recommended entr{'y' if len(info) == 1 else 'ies'} not present "
+              f"(ok if intentional): {', '.join(sorted(info)[:6])}"
+              + (" …" if len(info) > 6 else ""))
+
+    if gaps:
+        print("  CRITICAL GAPS — autonomous run should stop and ask the user to fix these:")
+        for g in gaps:
+            print(f"    ✗ {g}")
+        print("  fix:  ul_allowlist_check --print   then merge the block into settings.json")
+        sys.exit(1)
+
+    print("  OK: critical allows present and 'git push' is denied — safe to fan out.")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

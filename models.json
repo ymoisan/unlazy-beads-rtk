@@ -1,0 +1,21 @@
+{
+  "$comment": "Model tiers for autonomous bead execution. The 'lead' tier (the controller agent itself) is IMPLICIT and never listed here — a bead with no model field, or model 'lead', runs on the controller. Add or enable tiers below to delegate run-gated beads to cheaper models. IMPORTANT: 'model'/'vendor' must match what YOUR Copilot model picker actually exposes — keeping this list correct is the user's responsibility. If the controller dispatches to a listed model and it does not respond, it falls back to 'lead' (does the work itself) and warns you that this list needs attention. Tier depth is data-driven: enable a second worker entry to get a third tier.",
+  "tiers": [
+    {
+      "tag": "w",
+      "name": "worker",
+      "model": "Claude Haiku 4.5",
+      "vendor": "copilot",
+      "enabled": true,
+      "desc": "Cheap, fast model for mechanical, run-gated work (scaffolding, boilerplate, config wiring, deps). Safe to delegate precisely because a run gate catches its mistakes."
+    },
+    {
+      "tag": "m",
+      "name": "mid",
+      "model": "Claude Sonnet 4.5",
+      "vendor": "copilot",
+      "enabled": false,
+      "desc": "Mid-tier model for substantial but non-architectural run-gated coding. Enable this entry to introduce a third tier between worker and lead."
+    }
+  ]
+}

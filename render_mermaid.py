@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Render a mermaid flowchart from a beads manifest (JSON array of bead IDs).
 
-Node labels are two lines: an identity line (gate badge · WBS · bead id) over a
-short, mermaid-safe description derived from the title. Chars that break mermaid
-labels (<, >, &, |, ") are neutralised so the diagram never fails to parse.
+Node labels are two lines: an identity line (tier tag · gate badge · WBS · bead
+id) over a short, mermaid-safe description derived from the title. Chars that
+break mermaid labels (<, >, &, |, ") are neutralised so the diagram never fails
+to parse. A leading [w]/[m] tag marks a bead delegated to a worker/mid model
+tier; no tag means the lead (controller) runs it.
 
 Edge styling reads at a glance without a legend (shape + colour + weight):
   - parent-child : thin blue, circle head   (parent --o child)   "kin / owns"
@@ -11,9 +13,20 @@ Edge styling reads at a glance without a legend (shape + colour + weight):
 Only edges whose endpoints are both in the manifest are drawn.
 """
 import json
+import os
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+
+def _tiers():
+    # {tier_name: entry} for ENABLED tiers, read symlink-safe next to this script.
+    p = Path(os.path.realpath(__file__)).parent / "models.json"
+    if not p.is_file():
+        return {}
+    data = json.loads(p.read_text())
+    return {t["name"]: t for t in data.get("tiers", []) if t.get("enabled") and t.get("name")}
 
 
 def bd_json(args):
@@ -33,6 +46,19 @@ def main():
     idset = set(ids)
 
     issues = {i["id"]: i for i in bd_json(["list", "--all", "--json"]) if i["id"] in idset}
+
+    tiers = _tiers()
+
+    def model_tag(nid):
+        # [w]/[m] tag for a delegated tier; empty for lead (no model: label).
+        for lab in issues.get(nid, {}).get("labels") or []:
+            if lab.startswith("model:"):
+                name = lab[6:]
+                if name in ("lead", "none", ""):
+                    return ""
+                t = tiers.get(name)
+                return f"[{t['tag'] if t else name[:1]}] "
+        return ""
 
     def gate_badge(nid):
         # 🔒 = runnable gate, 👁 = manual (EVIDENCE) gate, none/absent = no badge.
@@ -65,7 +91,7 @@ def main():
     for nid in ids:
         title = issues.get(nid, {}).get("title") or nid
         wbs = wbs_of(nid)
-        ident = f"{gate_badge(nid)}{wbs + ' · ' if wbs else ''}{nid}"
+        ident = f"{model_tag(nid)}{gate_badge(nid)}{wbs + ' · ' if wbs else ''}{nid}"
         lines.append(f'  {sanitize(nid)}["{ident}<br/>{subtitle(clean(title))}"]')
 
     # Kin (parent-child) = thin blue with a circle head (UML-aggregation feel);

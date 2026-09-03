@@ -52,17 +52,18 @@ plan.json ──beads_gen──▶ beads graph (Dolt)  +  plan.graph.md (mermaid
 | Tool | Purpose |
 |------|---------|
 | `beads_gen <plan.json>` | Create the beads graph from a plan; render `plan.graph.md`; write `plan.beads.json` manifest. **Pre-create hard gate: runs `beads_lint` first and refuses to create/delete anything on a malformed graph (`--no-gate` overrides).** **Emits two review gates on every run: the mermaid chart + an inline `beads_verify` blocks table.** These two outputs are a **human stop point**, not a status print — present them and get explicit WBS/ordering sign-off before proposing or starting any implementation (see §10). Re-runnable (overwrites prior beads via manifest). Preflight refuses to run unless `issue-prefix` is pinned. |
-| `beads_lint <plan.json>` | **Structural integrity gate** (pure plan.json analysis, no bd): flags cycles (deadlock), danglers, self-deps, bad parent_key, string priorities, unstartable graphs; warns on redundant/lineage-crossing edges. Also validates the optional `gate` field (errors on an invalid value; warns on an ungated leaf or a gated container/epic). Exit 3 on error, 0 clean. Auto-invoked by `beads_gen` before creation; also standalone. Checks **integrity, not intent**. |
-| `beads_verify <plan.json>` | Print the WBS-sorted **blocks** table for the plan's beads (scoped via the manifest): each bead's blocked-by set, a `GATE` column (`run`/`manual`/`—`), `← READY` flags, and cross-plan anomalies. Auto-invoked by `beads_gen`; also runnable standalone. `bd ready` stays authoritative. |
+| `beads_lint <plan.json>` | **Structural integrity gate** (pure plan.json analysis, no bd): flags cycles (deadlock), danglers, self-deps, bad parent_key, string priorities, unstartable graphs; warns on redundant/lineage-crossing edges. Also validates the optional `gate` field (errors on an invalid value; warns on an ungated leaf or a gated container/epic) and the optional `model` tier (errors on an unknown/disabled tier; warns when a manual gate is delegated off-lead or a delegated task has no run gate). Exit 3 on error, 0 clean. Auto-invoked by `beads_gen` before creation; also standalone. Checks **integrity, not intent**. |
+| `beads_verify <plan.json>` | Print the WBS-sorted **blocks** table for the plan's beads (scoped via the manifest): each bead's blocked-by set, a `GATE` column (`run`/`manual`/`—`), a `MODEL` column (delegated tier, `lead` when absent), `← READY` flags, and cross-plan anomalies. Auto-invoked by `beads_gen`; also runnable standalone. `bd ready` stays authoritative. |
 | `ul_gates_gen <plan.json>` | Scaffold a gate ledger for each **leaf** (node with no children), detected via parent-child edges. |
 | `gate <id> [verb]` | Gate lifecycle: `--new`, `--lint`, `--approve`, reverify (default), `--close`. |
-| `render_mermaid.py <manifest>` | Render the review chart (helper) — edge colours + gate badges (🔒/👁). |
-| `wbs_prefix.py <plan.json>` | Add `[E1.T1.T1]` WBS codes to titles + `wbs:` labels, and `gate:` labels from each node's `gate` field (helper, used by beads_gen). |
+| `render_mermaid.py <manifest>` | Render the review chart (helper) — edge colours + gate badges (🔒/👁) + model-tier tags (`[w]`/`[m]`; none = lead). |
+| `wbs_prefix.py <plan.json>` | Add `[E1.T1.T1]` WBS codes to titles + `wbs:` labels, `gate:` labels from each node's `gate` field, and `model:` labels from each node's `model` field (helper, used by beads_gen). |
 | `devlog_update --trailer` / `--commit <sha>` | Devlog trace: trailer summary (read-only) / append DEVLOG.md entry + advance watermark. |
 | `install-devlog-hooks [repo]` | Chain-safe symlink of prepare-commit-msg + post-commit hooks. |
 | `hooks/stop-gate` | VS Code **Stop** hook (fires at session end): gate-enforce (blocks a clean stop, `exit 2`), staleness warn, heartbeat. Not called directly. |
 | `install-stop-hook` [`--disarm`] | Arm/disarm the Stop hook (default **ON**): write `agent-hooks.json`, register it in VS Code user settings, record the durable "armed" trace. |
 | `hook-doctor` | Report Stop-hook health (OK / UNCONFIRMED / INACTIVE / NOT-ARMED) + stale beads. Run at session start. |
+| `ul_allowlist_check` [`--print`] | Preflight VS Code's `chat.tools.terminal.autoApprove` before an autonomous run: verifies the curated allows (`rtk`, `bd`, …) and the mandatory `git push` **deny** are present. Exit 1 on a critical gap (stop and ask the user); `--print` emits the recommended JSON block to paste. |
 | `stale-beads [path]` / `--install-view` | List in-progress beads older than `UNLAZY_STALE_HOURS` (default 2h); `--install-view` adds a live `stale_beads` view to the repo's Dolt DB. |
 
 Every tool supports `-h`/`--help`, which prints its own header block — per-tool
@@ -101,12 +102,64 @@ themselves carry no personal path — only `$UNLAZY_HOME`.
   `beads_lint` errors on an invalid value and *warns* (never blocks) on a leaf
   with no gate or a container/epic carrying a runnable gate. Intent only — the
   ledger still decides whether a gate actually passes.
+- Optional **`model`** per node declares the **execution tier**: a tier name from
+  [`models.json`](../models.json) (e.g. `"worker"`, `"mid"`), or `"lead"`/`"none"`/
+  absent for the controller itself. `beads_gen` consumes it and stamps a
+  `model:<tier>` label, surfaced as a chart tag (`[w]`/`[m]`; none = lead) and a
+  `MODEL` column in the blocks table. `beads_lint` errors on an unknown/disabled
+  tier and warns on unsafe delegation (manual gate off-lead, or a delegated task
+  with no run gate). See §4a.
+
+## 4a. Model tiers & delegation
+
+Run-gated mechanical work can be delegated to a cheaper model; judgment and
+manual gates stay with the lead. Tiers live in
+[`models.json`](../models.json) (JSON, user-owned):
+
+```json
+{
+  "tiers": [
+    {"tag": "w", "name": "worker", "model": "Claude Haiku 4.5", "vendor": "copilot", "enabled": true,  "desc": "…"},
+    {"tag": "m", "name": "mid",    "model": "Claude Sonnet 4.5", "vendor": "copilot", "enabled": false, "desc": "…"}
+  ]
+}
+```
+
+- **`lead` is implicit** — never listed; a node with no `model` (or `model:"lead"`)
+  runs on the controller.
+- **Data-driven depth:** ships two tiers (`lead` + `worker`); enable the `mid`
+  entry to get a third. That toggle *is* the "choose your tiers" setting.
+- **Your responsibility:** `model`/`vendor` must match your Copilot picker. A
+  subagent is dispatched as `"{model} ({vendor})"`. If the model does not
+  respond, the lead **falls back to `lead`** (does it itself) and warns you that
+  `models.json` needs attention.
+- Charts/tables show the **tier tag** (`[w]`/`[m]`), not the model name — so a
+  swapped-out model never makes the chart lie.
+
+Delegation rule (see [docs/POLICY.md](POLICY.md) §4): **delegate the mechanical
+bulk, the lead keeps the one-liners and the judgment calls.** run-gated leaf →
+worker/mid; manual-gated/design → lead; literal one-liners → lead.
+
+### Governance (set in stone) — [docs/POLICY.md](POLICY.md)
+
+- **Commit — two modes:** interactive chat → *ask* before each commit;
+  autonomous agent/subagent work → *commit freely on the branch* at checkpoints.
+- **Push — never:** the lead never `git push`es in any context. Humans push.
+- **Deletes — guarded:** git-aware deletes and `rm -f <file>` are fine; `rm -rf`
+  only on a relative in-tree subpath that avoids `.git/`, `.beads/`, absolute
+  paths, `~`, and bare `*`.
+- **Allowlist preflight:** before a fan-out or long loop, run `ul_allowlist_check`;
+  stop on a critical gap. Re-verify before each bead; treat an unexpected prompt
+  as drift → stop and re-check.
+
+---
 
 ## 5. Chart legend (mermaid)
 
 - **parent-child (kin):** thin **blue** line, **circle** head — `parent --o child`
 - **blocks:** fat **red** line, **arrow** head — `blocker ==> blocked`
 - **gate badge (node prefix):** 🔒 = runnable gate · 👁 = manual (EVIDENCE) gate · no badge = ungated
+- **model tag (node prefix):** `[w]` = worker · `[m]` = mid · no tag = lead (controller)
 
 Shape + colour + weight all differ, so the chart reads without a legend.
 

@@ -61,6 +61,11 @@ real step up from unstructured chat, and every piece is local and
 policy-friendly. The adapter seam is deliberately thin, so the day your
 toolchain allows a CLI runner, the same `.beads/` and gates carry over unchanged.
 
+For how the toolkit stays inside strict-environment limits — no privilege
+escalation, no data exfiltration, no silent push, and a machine-enforced
+allowlist you tune to your org — see **[Compliance in strict / locked-down
+environments](docs/POLICY.md#6-compliance-in-strict--locked-down-environments)**.
+
 ## Usage at a glance
 
 Two independent halves — pick per project:

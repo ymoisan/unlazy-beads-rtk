@@ -14,11 +14,24 @@ Usage:
   beads_lint <plan.json>
 """
 import json
+import os
 import sys
 from pathlib import Path
 
 ALLOWED_TYPES = {"epic", "task", "bug", "feature", "chore", "decision"}
 ALLOWED_GATES = {"run", "manual", "none"}
+
+
+def enabled_tiers():
+    # Names of ENABLED model tiers from models.json (symlink-safe), 'lead' implicit.
+    p = Path(os.path.realpath(__file__)).parent / "models.json"
+    if not p.is_file():
+        return set()
+    try:
+        data = json.loads(p.read_text())
+    except json.JSONDecodeError:
+        return set()
+    return {t["name"] for t in data.get("tiers", []) if t.get("enabled") and t.get("name")}
 
 
 def main():
@@ -42,6 +55,8 @@ def main():
     edges = plan.get("edges") or []
     errors = []
     warns = []
+    tiers = enabled_tiers()
+    allowed_models = tiers | {"lead", "none"}
 
     # ---- node-level checks -------------------------------------------------
     keys = [n.get("key") for n in nodes]
@@ -71,6 +86,10 @@ def main():
         if g is not None and g not in ALLOWED_GATES:
             errors.append(f"node {k!r} has invalid gate {g!r} "
                           f"(allowed: {', '.join(sorted(ALLOWED_GATES))})")
+        m = n.get("model")
+        if m is not None and m not in allowed_models:
+            errors.append(f"node {k!r} has invalid model tier {m!r} "
+                          f"(allowed: {', '.join(sorted(allowed_models))} — enable more in models.json)")
 
     # ---- gate intent placement (warn-only) ---------------------------------
     parents = {n.get("parent_key") for n in nodes if n.get("parent_key") in by_key}
@@ -83,6 +102,19 @@ def main():
             warns.append(f"leaf node {k!r} has no gate (gate:none) — verification is trust-only; intended?")
         if is_container and g == "run":
             warns.append(f"node {k!r} is a container/epic with a runnable gate — gates usually belong on leaves")
+
+    # ---- model-tier delegation placement (warn-only) -----------------------
+    for n in nodes:
+        k = n.get("key")
+        g = n.get("gate")
+        m = n.get("model")
+        delegated = m not in (None, "lead", "none")
+        if delegated and g == "manual":
+            warns.append(f"node {k!r} is manual-gated (EVIDENCE/judgment) yet delegated to tier {m!r} — "
+                         f"manual gates usually stay with the lead")
+        if delegated and g in (None, "none"):
+            warns.append(f"node {k!r} is delegated to tier {m!r} with no run gate — a cheaper model's "
+                         f"output would land unverified; add a run gate or keep it on the lead")
 
     # ---- edge-level checks -------------------------------------------------
     blocks = []  # (A, B) meaning A depends on B (B must finish first)

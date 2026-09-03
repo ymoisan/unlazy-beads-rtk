@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Prefix each GraphPlan node title with a WBS code derived from the parent_key
 tree, and add a matching `wbs:<code>` label; also convert an optional per-node
-`gate` field ("run"|"manual"|"none") into a `gate:<kind>` label, consumed so bd
-never sees the field. Reads a plan.json path, writes the transformed plan to
-stdout.
+`gate` field ("run"|"manual"|"none") into a `gate:<kind>` label, and an optional
+per-node `model` field (a tier name like "worker"|"mid", or "lead"|"none") into a
+`model:<tier>` label — both consumed so bd never sees the raw fields. Reads a
+plan.json path, writes the transformed plan to stdout.
 
 Codes use the node's type-initial + sibling index, dotted by depth:
   epic  -> E1
@@ -59,6 +60,13 @@ def main():
             gl = f"gate:{gate}"
             if gl not in labels:
                 labels = labels + [gl]
+        # model tier -> model:<tier> label; consume the field. 'lead'/'none'/absent
+        # need no label (lead is the implicit default controller tier).
+        model = n.pop("model", None)
+        if model and model not in ("lead", "none"):
+            ml = f"model:{model}"
+            if ml not in labels:
+                labels = labels + [ml]
         n["labels"] = labels
 
     json.dump(plan, sys.stdout)
