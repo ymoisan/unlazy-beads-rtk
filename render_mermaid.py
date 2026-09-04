@@ -69,6 +69,10 @@ def main():
                 return "👁 "
         return ""
 
+    def review_badge(nid):
+        # 🔎 = flagged for an independent reviewer pass (review:req).
+        return "🔎 " if "review:req" in (issues.get(nid, {}).get("labels") or []) else ""
+
     def wbs_of(nid):
         for lab in issues.get(nid, {}).get("labels") or []:
             if lab.startswith("wbs:"):
@@ -87,11 +91,13 @@ def main():
         return text if len(text) <= n else text[: n - 1].rstrip() + "…"
 
     # Two-line node label: identity line (badge · WBS · id) over a short description.
-    lines = ["flowchart LR"]
+    # TB (top-down): parent-child edges point epic→task, so epics sit at the top and
+    # their tasks hang below — a portrait layout that stays legible as phases grow.
+    lines = ["flowchart TB"]
     for nid in ids:
         title = issues.get(nid, {}).get("title") or nid
         wbs = wbs_of(nid)
-        ident = f"{model_tag(nid)}{gate_badge(nid)}{wbs + ' · ' if wbs else ''}{nid}"
+        ident = f"{model_tag(nid)}{gate_badge(nid)}{review_badge(nid)}{wbs + ' · ' if wbs else ''}{nid}"
         lines.append(f'  {sanitize(nid)}["{ident}<br/>{subtitle(clean(title))}"]')
 
     # Kin (parent-child) = thin blue with a circle head (UML-aggregation feel);

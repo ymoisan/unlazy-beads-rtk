@@ -11,12 +11,14 @@
 #   gate <bead-id> --approve  approve+run pending checks (first run of new checks)
 #   gate <bead-id> --lint     lint the ledger for un-failable oracles
 #   gate <bead-id> --new      scaffold a ledger from the template
-#   gate <bead-id> --close [--note "how it was built"]
+#   gate <bead-id> --close [--note "how it was built"] [--override-review]
 #                             reverify, then `bd close <bead-id>` iff all gates
 #                             pass; append the handoff note to each open bead
 #                             this one was blocking (WALKTHROUGH §12). The note
 #                             is REQUIRED when the bead unblocks others (refuses
 #                             without it); omit it when there are no dependents.
+#                             A review:req bead must be review:ok (not
+#                             review:block) to close; --override-review bypasses.
 #
 # Conventions (see ~/.agents/unlazy-beads-rtk/beads_unlazy_plan.md):
 #   - Route CHECK commands through rtk (rtk cargo test, rtk npm ...). rtk's
@@ -31,6 +33,7 @@ CHECKER="$SKILL_DIR/scripts/gate_check.py"
 LINTER="$SKILL_DIR/scripts/gate_lint.py"
 TEMPLATE="${GATES_TEMPLATE:-$HOME/.agents/unlazy-beads-rtk/GATES.template.md}"
 HANDOFF="${UNLAZY_HANDOFF:-$HOME/.agents/unlazy-beads-rtk/handoff_note.py}"
+REVIEW="${UNLAZY_REVIEW:-$HOME/.agents/unlazy-beads-rtk/review.py}"
 
 die() { echo "gate: $*" >&2; exit 2; }
 
@@ -67,8 +70,21 @@ case "$action" in
   --close)
     [[ -f "$ledger" ]] || die "no ledger: $ledger (run: gate $bead --new)"
     handoff_note=""
-    [[ "${2:-}" == "--note" ]] && handoff_note="${3:-}"
+    override_review=0
+    shift || true   # drop the --close token; parse its options in any order
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --note) handoff_note="${2:-}"; shift 2 ;;
+        --override-review) override_review=1; shift ;;
+        *) die "unknown --close option: $1 (use --note \"...\" or --override-review)" ;;
+      esac
+    done
     if python3 "$CHECKER" --reverify --root "$repo_root" "$ledger"; then
+      # review gate: a bead flagged review:req must be reviewed (review:ok) and not
+      # review:block before it can close. --override-review is the human bypass.
+      if [[ -f "$REVIEW" && $override_review -eq 0 ]]; then
+        python3 "$REVIEW" --gate "$bead" || { echo "gate: review gate blocked close of $bead (--override-review to bypass)" >&2; exit 1; }
+      fi
       # if this bead unblocks others, a handoff note is mandatory — refuse before close
       deps=""
       [[ -f "$HANDOFF" ]] && deps="$(python3 "$HANDOFF" --deps "$bead" 2>/dev/null || true)"

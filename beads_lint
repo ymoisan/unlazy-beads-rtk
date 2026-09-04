@@ -34,6 +34,15 @@ def enabled_tiers():
     return {t["name"] for t in data.get("tiers", []) if t.get("enabled") and t.get("name")}
 
 
+def reviewer_enabled():
+    # True if models.json has an enabled `reviewer` block (symlink-safe).
+    p = Path(os.path.realpath(__file__)).parent / "models.json"
+    try:
+        return bool(json.loads(p.read_text()).get("reviewer", {}).get("enabled"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def main():
     argv = sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help"):
@@ -90,6 +99,9 @@ def main():
         if m is not None and m not in allowed_models:
             errors.append(f"node {k!r} has invalid model tier {m!r} "
                           f"(allowed: {', '.join(sorted(allowed_models))} — enable more in models.json)")
+        rv = n.get("review")
+        if rv is not None and not isinstance(rv, bool):
+            errors.append(f"node {k!r} 'review' must be a boolean, got {type(rv).__name__} ({rv!r})")
 
     # ---- gate intent placement (warn-only) ---------------------------------
     parents = {n.get("parent_key") for n in nodes if n.get("parent_key") in by_key}
@@ -115,6 +127,11 @@ def main():
         if delegated and g in (None, "none"):
             warns.append(f"node {k!r} is delegated to tier {m!r} with no run gate — a cheaper model's "
                          f"output would land unverified; add a run gate or keep it on the lead")
+
+    # ---- reviewer availability (warn-only) ---------------------------------
+    if any(n.get("review") is True for n in nodes) and not reviewer_enabled():
+        warns.append("nodes are flagged 'review:true' but models.json reviewer.enabled is false "
+                     "— the review gate is inert until you enable it")
 
     # ---- edge-level checks -------------------------------------------------
     blocks = []  # (A, B) meaning A depends on B (B must finish first)

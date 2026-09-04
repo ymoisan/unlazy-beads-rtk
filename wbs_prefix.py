@@ -67,6 +67,11 @@ def main():
             ml = f"model:{model}"
             if ml not in labels:
                 labels = labels + [ml]
+        # review flag -> review:req label; consume the field. Marks the bead for an
+        # independent reviewer pass (models.json `reviewer`) before it may close.
+        if n.pop("review", None) is True:
+            if "review:req" not in labels:
+                labels = labels + ["review:req"]
         # `why` is a review-only justification read from the plan by beads_verify;
         # consume it so bd never sees the field (no label — prose isn't a tag).
         n.pop("why", None)

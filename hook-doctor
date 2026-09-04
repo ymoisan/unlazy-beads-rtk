@@ -52,5 +52,13 @@ if [[ -d "$PWD/.beads" && -f "$handoff" ]]; then
   [[ -n "$ho" ]] && { echo "handoff notes need attention (fix: handoff_note.py --reconcile):"; echo "$ho"; }
 fi
 
+# reviews-due surfacing: open beads flagged review:req still awaiting a verdict
+# (no review:ok/review:block). No-op when the reviewer is disabled in models.json.
+review="${UNLAZY_REVIEW:-$UNLAZY_HOME/.agents/unlazy-beads-rtk/review.py}"
+if [[ -d "$PWD/.beads" && -f "$review" ]]; then
+  rv="$(python3 "$review" --due 2>/dev/null || true)"
+  [[ -n "$rv" ]] && { echo "reviews due (run: review --scope <bead>):"; echo "$rv"; }
+fi
+
 # advance the session-start marker LAST, so this run compared against the prior one
 printf '%s\tsid=%s\n' "$now" "${1:-session}" > "$ss"
