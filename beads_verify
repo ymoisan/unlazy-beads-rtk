@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -57,6 +58,56 @@ def review_mark(issue):
         return "✓"
     if "review:req" in labs:
         return "R"
+    return ""
+
+
+def _parse_ts(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _fmt_dur(secs):
+    secs = int(secs)
+    d, r = divmod(secs, 86400)
+    h, r = divmod(r, 3600)
+    m, _ = divmod(r, 60)
+    if d:
+        return f"{d}d{h}h"
+    if h:
+        return f"{h}h{m}m"
+    if m:
+        return f"{m}m"
+    return "<1m"
+
+
+def time_spent(issue):
+    # Wall-clock claim(status->in_progress) -> close, from Dolt commit history.
+    # Blank until closed, so open beads cost no history lookup.
+    if str(issue.get("status", "")).lower() not in ("closed", "done"):
+        return ""
+    hist = bd_json(["history", issue["id"], "--json"])
+    if not isinstance(hist, list) or not hist:
+        return ""
+    start = end = None
+    for e in sorted(hist, key=lambda x: x.get("CommitDate", "")):
+        st = str((e.get("Issue") or {}).get("status", "")).lower()
+        cd = _parse_ts(e.get("CommitDate"))
+        if cd is None:
+            continue
+        if st == "in_progress" and start is None:
+            start = cd
+        if st in ("closed", "done") and end is None:
+            end = cd
+    if start is not None and end is not None and end >= start:
+        return _fmt_dur(end - start)
+    # No recorded claim: fall back to created_at->close, marked approximate.
+    c = _parse_ts(issue.get("created_at"))
+    if end is not None and c is not None and end >= c:
+        return "~" + _fmt_dur(end - c)
     return ""
 
 
@@ -168,9 +219,13 @@ def main():
     rows = sorted(issues.values(), key=lambda i: wbs(i))
     w_wbs = max([len("WBS")] + [len(wbs(i)) for i in rows])
     w_why = min(40, max([len("WHY")] + [len(why_by_wbs.get(wbs(i), "—")) for i in rows]))
+    # Time spent is posterior: only closed beads trigger a history lookup, so
+    # this stays empty (and cheap) while work is in flight.
+    spent = {i["id"]: time_spent(i) for i in rows}
+    w_time = max([len("TIME SPENT")] + [len(v) for v in spent.values()])
 
     header = (f"{'WBS':<{w_wbs}}  {'ID':<8}  {'STATUS':<8}  {'GATE':<6}  "
-              f"{'M':<1}  {'V':<1}  {'WHY':<{w_why}}  BLOCKED-BY (must finish first)")
+              f"{'M':<1}  {'V':<1}  {'TIME SPENT':<{w_time}}  {'WHY':<{w_why}}  BLOCKED-BY (must finish first)")
     print(f"Plan: {plan.name}   ({len(rows)} beads)")
     print(header)
     print("-" * len(header))
@@ -192,7 +247,7 @@ def main():
         status = str(i.get("status", "?")).lower()
         why = trunc(why_by_wbs.get(wbs(i), "—"), w_why)
         print(f"{wbs(i):<{w_wbs}}  {i['id']:<8}  {status:<8}  {gate(i):<6}  "
-              f"{model_letter(i):<1}  {review_mark(i):<1}  {why:<{w_why}}  {parent_str}{flag}")
+              f"{model_letter(i):<1}  {review_mark(i):<1}  {spent[i['id']]:<{w_time}}  {why:<{w_why}}  {parent_str}{flag}")
 
     print("-" * len(header))
     # Embedded legend: the single-letter M column + the WHY source.
@@ -204,6 +259,7 @@ def main():
         print(f"  {tag}  {t.get('name', ''):<6} — {t.get('reason') or t.get('desc', '')}{state}")
     print("WHY = per-bead justification (plan `why`, else the tier default).")
     print("V (review): R = flagged review:req, ✓ = review:ok, ✗ = review:block.")
+    print("TIME SPENT = claim→close wall-clock (bd history); blank until closed, ‘~’ = from create.")
     print()
     print(f"Ready now (blocks satisfied, still open): {', '.join(ready) if ready else 'none'}")
     if anomalies:
